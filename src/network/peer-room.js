@@ -3,7 +3,7 @@
 // connection cleanup. UI and simulation actions are supplied as callbacks.
 import { PLAYER_COLORS } from '../config.js';
 
-const ALLOWED_INPUTS = ['left', 'right', 'jump', 'up', 'down', 'attack', 'smash', 'special', 'shield'];
+const ALLOWED_INPUTS = ['left', 'right', 'jump', 'up', 'down', 'attack', 'smash', 'special', 'dropItem', 'shield'];
 
 export function createPeerRoom(runtime, ui) {
   function generateRoomCode() {

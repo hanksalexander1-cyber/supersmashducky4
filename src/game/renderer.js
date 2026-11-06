@@ -1,33 +1,124 @@
 // Canvas presentation layer for the live match. It reads the current runtime
 // state and draws stage art, duck sprites and poses, combat effects, items,
 // and overlays; game rules and networking are handled by separate modules.
-import { ARENA, SPAWN_PLATFORM, STAGES } from '../config.js';
+import { ARENA, KO_EFFECT, SPAWN_PLATFORM, getStageLayout } from '../config.js';
 import { drawSpotlights, drawStageBackground } from './stage-art.js';
 
 export function createBattleRenderer({ runtime, querySelector, backgroundImages, spriteCache }) {
   const renderImages = new Map();
+  let cameraLeft = 0;
 
   function drawBattle() {
     const canvas = querySelector('#arenaCanvas');
     const context = canvas.getContext('2d');
-    const time = performance.now() / 1000;
-    const stage = STAGES.find((candidate) => candidate.id === runtime.game.stageId) || STAGES[0];
+    const time = runtime.game.elapsedTime || performance.now() / 1000;
+    const stage = runtime.game.stageLayout || getStageLayout(runtime.game.stageId);
+    cameraLeft = getCameraLeft(stage, runtime.game.entities);
 
     context.clearRect(0, 0, ARENA.width, ARENA.height);
     context.save();
+    context.translate(-cameraLeft, 0);
     applyScreenShake(context, runtime.game.shake);
 
     // Keep scene layers ordered so the spotlights sit over the stage and under the fighters.
-    drawStageBackground(context, stage, backgroundImages);
-    drawSpotlights(context, time);
+    drawStageBackground(context, stage, backgroundImages, time);
+    drawSpotlights(context, time, stage.width);
+    drawStagePlatforms(context, stage);
     drawSpawnPlatforms(context, runtime.game.entities);
     drawSmashBall(context, runtime.game.smashBall);
+    drawItems(context, runtime.game.items);
     drawProjectiles(context, runtime.game.projectiles);
     drawFighters(context, runtime.game.entities);
     drawParticles(context, runtime.game.particles);
 
     // The outer save/restore contains the shake transform and any canvas state changes.
     context.restore();
+    drawSideKOEffects(context, runtime.game.koEffects);
+  }
+
+  function getCameraLeft(stage, fighters) {
+    const activeFighters = fighters.filter((fighter) => !fighter.eliminated && fighter.respawn <= 0);
+    if (stage.width <= ARENA.width || activeFighters.length === 0) return 0;
+    const center = activeFighters.reduce((sum, fighter) => sum + fighter.x, 0) / activeFighters.length;
+    const target = Math.max(0, Math.min(stage.width - ARENA.width, center - ARENA.width / 2));
+    cameraLeft += (target - cameraLeft) * 0.08;
+    return cameraLeft;
+  }
+
+  function drawSideKOEffects(context, effects = []) {
+    for (const effect of effects) drawSideKOBlast(context, effect);
+  }
+
+  function drawSideKOBlast(context, effect) {
+    const lifeRatio = effect.life / effect.max;
+    const direction = effect.side === 'left' ? 1 : -1;
+    const edgeX = effect.side === 'left' ? 0 : ARENA.width;
+    const blastRadius = KO_EFFECT.startingRadius + (1 - lifeRatio) * (KO_EFFECT.blastRadius - KO_EFFECT.startingRadius);
+    const beamLength = KO_EFFECT.startingBeamLength + (1 - lifeRatio) * KO_EFFECT.growingBeamLength;
+    drawKOBeam(context, effect, edgeX, direction, beamLength, lifeRatio);
+    drawKORings(context, effect, edgeX, blastRadius, lifeRatio);
+  }
+
+  function drawKOBeam(context, effect, edgeX, direction, beamLength, lifeRatio) {
+    const beam = context.createLinearGradient(edgeX, effect.y, edgeX + direction * beamLength, effect.y);
+    beam.addColorStop(0, `rgba(255,240,230,${lifeRatio})`);
+    beam.addColorStop(0.24, `rgba(255,35,20,${lifeRatio})`);
+    beam.addColorStop(1, 'rgba(160,0,20,0)');
+    context.save();
+    context.globalAlpha = lifeRatio;
+    context.fillStyle = beam;
+    context.shadowColor = '#ff2018';
+    context.shadowBlur = KO_EFFECT.beamShadow;
+    context.fillRect(Math.min(edgeX, edgeX + direction * beamLength), effect.y - KO_EFFECT.beamHalfHeight, beamLength, KO_EFFECT.beamHalfHeight * 2);
+    context.restore();
+  }
+
+  function drawKORings(context, effect, edgeX, blastRadius, lifeRatio) {
+    const blast = context.createRadialGradient(edgeX, effect.y, 5, edgeX, effect.y, blastRadius);
+    blast.addColorStop(0, '#fff7dc');
+    blast.addColorStop(0.13, '#ffca61');
+    blast.addColorStop(0.43, '#ff321b');
+    blast.addColorStop(0.78, '#c50020dd');
+    blast.addColorStop(1, '#70001800');
+    context.save();
+    context.globalAlpha = lifeRatio;
+    context.fillStyle = blast;
+    context.beginPath();
+    context.arc(edgeX, effect.y, blastRadius, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = '#ff3928';
+    context.lineWidth = KO_EFFECT.outerRingWidth;
+    context.shadowBlur = 30;
+    context.beginPath();
+    context.arc(edgeX, effect.y, blastRadius * KO_EFFECT.outerRingScale, 0, Math.PI * 2);
+    context.stroke();
+    context.strokeStyle = '#ffad61';
+    context.lineWidth = KO_EFFECT.innerRingWidth;
+    context.beginPath();
+    context.arc(edgeX, effect.y, blastRadius * KO_EFFECT.innerRingScale, 0, Math.PI * 2);
+    context.stroke();
+    context.restore();
+  }
+
+  function drawStagePlatforms(context, stage) {
+    if (stage.hidePlatforms) return;
+    const visiblePlatforms = [...stage.platforms, { x: stage.playableLeft, w: stage.playableRight - stage.playableLeft, y: stage.floorY }];
+    for (const platform of visiblePlatforms) {
+      context.save();
+      context.shadowColor = stage.top;
+      context.shadowBlur = 13;
+      const fill = context.createLinearGradient(0, platform.y, 0, platform.y + 17);
+      fill.addColorStop(0, '#526a79');
+      fill.addColorStop(1, '#172633');
+      context.fillStyle = fill;
+      context.beginPath();
+      context.roundRect(platform.x, platform.y, platform.w, 17, 5);
+      context.fill();
+      context.shadowBlur = 0;
+      context.fillStyle = stage.top;
+      context.fillRect(platform.x + 5, platform.y, platform.w - 10, 3);
+      context.restore();
+    }
   }
 
   function applyScreenShake(context, shakeAmount) {
@@ -95,6 +186,10 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
   }
 
   function drawProjectile(context, projectile) {
+    if (projectile.kind === 'bomb' || projectile.kind === 'banana') {
+      drawThrownItem(context, projectile);
+      return;
+    }
     const glow = context.createRadialGradient(
       projectile.x - 4, projectile.y - 5, 2,
       projectile.x, projectile.y, projectile.radius + 5,
@@ -123,6 +218,159 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.arc(projectile.x, projectile.y, projectile.radius * 0.58, 0, Math.PI * 2);
     context.stroke();
     context.restore();
+  }
+
+  function drawThrownItem(context, projectile) {
+    context.save();
+    context.strokeStyle = projectile.color;
+    context.lineWidth = 3;
+    context.shadowColor = projectile.color;
+    context.shadowBlur = 15;
+    context.beginPath();
+    context.moveTo(projectile.x - projectile.vx * 2, projectile.y - projectile.vy * 2);
+    context.lineTo(projectile.x, projectile.y);
+    context.stroke();
+    drawItemIcon(context, projectile.kind, projectile.x, projectile.y, 0.9);
+    context.restore();
+  }
+
+  function drawItems(context, items = []) {
+    for (const item of items) {
+      context.save();
+      context.translate(item.x, item.y + Math.sin(performance.now() / 140 + item.x) * 3);
+      context.shadowColor = item.type === 'star' ? '#ffe65a' : '#ff8954';
+      context.shadowBlur = 18;
+      context.fillStyle = '#172431dd';
+      context.beginPath();
+      context.arc(0, 0, 22, 0, Math.PI * 2);
+      context.fill();
+      drawItemIcon(context, item.type, 0, 0, 1);
+      context.restore();
+    }
+  }
+
+  function drawItemIcon(context, type, x, y, scale) {
+    context.save();
+    context.translate(x, y);
+    context.scale(scale, scale);
+    context.lineWidth = 2.5;
+    context.lineJoin = 'round';
+    context.lineCap = 'round';
+    context.strokeStyle = '#273342';
+    const iconDrawers = {
+      blaster: drawBlasterIcon,
+      bomb: drawBombIcon,
+      banana: drawBananaIcon,
+      heart: drawHeartIcon,
+      shield: drawShieldIcon,
+      isaac: drawIsaacIcon,
+    };
+    (iconDrawers[type] || drawStarIcon)(context);
+    context.restore();
+  }
+
+  function drawBlasterIcon(context) {
+    context.fillStyle = '#82dfc1';
+    context.beginPath();
+    context.roundRect(-16, -7, 25, 14, 4);
+    context.roundRect(4, -4, 15, 7, 2);
+    context.roundRect(-9, 4, 8, 11, 2);
+    context.fill();
+    context.stroke();
+  }
+
+  function drawBombIcon(context) {
+    context.fillStyle = '#e84f48';
+    context.beginPath();
+    context.arc(0, 3, 12, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.beginPath();
+    context.moveTo(2, -9);
+    context.lineTo(7, -16);
+    context.stroke();
+    context.fillStyle = '#ffd95b';
+    context.beginPath();
+    context.arc(8, -17, 3, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  function drawBananaIcon(context) {
+    context.fillStyle = '#ffd84c';
+    context.beginPath();
+    context.moveTo(-13, -8);
+    context.quadraticCurveTo(1, 4, 13, -10);
+    context.quadraticCurveTo(9, 12, -4, 13);
+    context.quadraticCurveTo(-13, 5, -13, -8);
+    context.fill();
+    context.stroke();
+  }
+
+  function drawHeartIcon(context) {
+    context.fillStyle = '#ff6582';
+    context.beginPath();
+    context.moveTo(0, 13);
+    context.bezierCurveTo(-19, 1, -11, -13, 0, -6);
+    context.bezierCurveTo(11, -13, 19, 1, 0, 13);
+    context.fill();
+    context.stroke();
+  }
+
+  function drawShieldIcon(context) {
+    context.fillStyle = '#75d9ff';
+    context.beginPath();
+    context.moveTo(0, -14);
+    context.lineTo(12, -9);
+    context.lineTo(10, 5);
+    context.lineTo(0, 14);
+    context.lineTo(-10, 5);
+    context.lineTo(-12, -9);
+    context.closePath();
+    context.fill();
+    context.stroke();
+  }
+
+  function drawIsaacIcon(context) {
+    context.fillStyle = '#f2c18c';
+    context.beginPath();
+    context.arc(0, 1, 11, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#d84935';
+    context.beginPath();
+    context.moveTo(-12, -3);
+    context.lineTo(-8, -14);
+    context.lineTo(-2, -10);
+    context.lineTo(3, -16);
+    context.lineTo(9, -9);
+    context.lineTo(13, -3);
+    context.lineTo(7, -5);
+    context.lineTo(0, -7);
+    context.lineTo(-7, -5);
+    context.closePath();
+    context.fill();
+    context.stroke();
+    context.fillStyle = '#303444';
+    context.beginPath();
+    context.arc(-4, 1, 1.4, 0, Math.PI * 2);
+    context.arc(4, 1, 1.4, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  function drawStarIcon(context) {
+    context.fillStyle = '#ffe65a';
+    context.beginPath();
+    for (let pointIndex = 0; pointIndex < 10; pointIndex++) {
+      const angle = -Math.PI / 2 + pointIndex * Math.PI / 5;
+      const radius = pointIndex % 2 ? 6 : 14;
+      const pointX = Math.cos(angle) * radius;
+      const pointY = Math.sin(angle) * radius;
+      if (pointIndex === 0) context.moveTo(pointX, pointY);
+      else context.lineTo(pointX, pointY);
+    }
+    context.closePath();
+    context.fill();
+    context.stroke();
   }
 
   function drawFighters(context, fighters) {
@@ -155,9 +403,67 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     if (fighter.jumpStyle === 3 && fighter.jumpPose > 0) drawThirdJumpAura(context, fighter);
     if (fighter.flash > 0) drawHitFlash(context, fighter);
     drawFighterArtwork(context, fighter, duck, pose);
+    drawDuckFeet(context, fighter, pose);
+    drawDirectionalKick(context, fighter);
     drawAttackArc(context, fighter, pose.attackProgress, pose.lunge);
     drawSmashWindup(context, fighter);
     drawFighterLabel(context, fighter);
+  }
+
+  function drawDuckFeet(context, fighter, pose) {
+    const centerX = fighter.x + pose.lunge * fighter.facing;
+    const footY = fighter.y + 32 * pose.scaleY + pose.bob;
+    const footSpread = fighter.grounded ? 14 : 11;
+    const footDrop = fighter.grounded ? Math.sin(fighter.walkPhase * 2) * 2 : 4;
+    context.save();
+    context.translate(centerX, footY);
+    context.rotate(pose.tilt * 0.35);
+    context.strokeStyle = '#8e4f20';
+    context.lineWidth = 2;
+    context.lineCap = 'round';
+    context.fillStyle = '#f2a43b';
+    for (const side of [-1, 1]) {
+      context.strokeStyle = '#8e4f20';
+      context.beginPath();
+      context.moveTo(side * footSpread, -7);
+      context.lineTo(side * footSpread, footDrop - 2);
+      context.stroke();
+      context.beginPath();
+      context.moveTo(side * footSpread - 8, footDrop - 2);
+      context.quadraticCurveTo(side * footSpread + 2, footDrop - 8, side * footSpread + 9, footDrop - 1);
+      context.lineTo(side * footSpread + 12, footDrop + 3);
+      context.lineTo(side * footSpread - 11, footDrop + 3);
+      context.closePath();
+      context.fill();
+      context.stroke();
+      for (let toeIndex = 0; toeIndex < 3; toeIndex++) {
+        const toeX = side * footSpread - 7 + toeIndex * 7;
+        context.beginPath();
+        context.moveTo(toeX, footDrop + 1);
+        context.lineTo(toeX + 1, footDrop + 4);
+        context.stroke();
+      }
+    }
+    context.restore();
+  }
+
+  function drawDirectionalKick(context, fighter) {
+    const isAerial = fighter.attackType.startsWith('air-');
+    const isDownKick = fighter.attackType.includes('down');
+    if ((!isAerial && !isDownKick) || fighter.attackWarmup > 0) return;
+    const directionY = isDownKick ? 1 : fighter.attackType === 'air-up' ? -1 : 0.2;
+    const directionX = fighter.facing * (fighter.attackType === 'air-neutral' ? 0.65 : isDownKick ? 0.35 : 1);
+    context.save();
+    context.strokeStyle = '#ffc55b';
+    context.shadowColor = '#ff9d35';
+    context.shadowBlur = 17;
+    context.lineWidth = 11;
+    context.lineCap = 'round';
+    context.beginPath();
+    context.moveTo(fighter.x + fighter.facing * 7, fighter.y + 17);
+    context.lineTo(fighter.x + directionX * 44, fighter.y + 17 + directionY * 32);
+    context.stroke();
+    context.restore();
   }
 
   function drawSpawnProtection(context, fighter) {
@@ -282,10 +588,11 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
   }
 
   function drawFighterShadow(context, fighter) {
-    const shadowScale = Math.max(0.35, 1 - Math.max(0, 420 - fighter.y) * 0.002);
+    const floorY = runtime.game.stageLayout?.floorY || ARENA.floorY;
+    const shadowScale = Math.max(0.35, 1 - Math.max(0, floorY - fighter.y) * 0.002);
     context.fillStyle = '#07111a88';
     context.beginPath();
-    context.ellipse(fighter.x, Math.min(420, fighter.y + 38), 35 * shadowScale, 7 * shadowScale, 0, 0, Math.PI * 2);
+    context.ellipse(fighter.x, Math.min(floorY, fighter.y + 38), 35 * shadowScale, 7 * shadowScale, 0, 0, Math.PI * 2);
     context.fill();
   }
 
@@ -462,6 +769,23 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.fillStyle = '#fff';
     context.font = '900 11px system-ui,sans-serif';
     context.fillText(`P${fighter.slot}`, fighter.x, fighter.y - 69);
+    if (fighter.weapon?.ammo > 0) drawWeaponIcon(context, fighter);
+  }
+
+  function drawWeaponIcon(context, fighter) {
+    const iconX = fighter.x + 38;
+    const iconY = fighter.y + 55;
+    context.fillStyle = '#101a24dd';
+    context.beginPath();
+    context.arc(iconX, iconY, 14, 0, Math.PI * 2);
+    context.fill();
+    drawItemIcon(context, fighter.weapon.type, iconX, iconY, 0.58);
+    if (fighter.weapon.ammo > 1) {
+      context.fillStyle = '#fff';
+      context.font = '900 10px system-ui,sans-serif';
+      context.textAlign = 'center';
+      context.fillText(String(fighter.weapon.ammo), iconX + 12, iconY + 13);
+    }
   }
 
   function drawParticles(context, particles = []) {

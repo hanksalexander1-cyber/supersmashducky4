@@ -762,9 +762,34 @@ button {
   text-overflow:ellipsis;
   margin-top:2px
 }
+.item-equipped {
+  margin-top:3px;
+  color:#ffe27a;
+  font-size:8px;
+  font-weight:900;
+  letter-spacing:.03em;
+  text-transform:uppercase
+}
 .battle-damage {
   font:900 23px/.9 'Barlow Condensed',sans-serif;
-  text-align:right
+  text-align:right;
+  color:color-mix(in srgb, #ff493d var(--damage-heat), #f4f6ed);
+  text-shadow:0 0 8px #ff493d66
+}
+.damage-track {
+  height:4px;
+  margin-top:5px;
+  overflow:hidden;
+  border-radius:5px;
+  background:#263642
+}
+.damage-track i {
+  display:block;
+  width:var(--damage-heat);
+  height:100%;
+  border-radius:inherit;
+  background:linear-gradient(90deg,#f0d85b,#ff873b,#ff3d4f);
+  box-shadow:0 0 8px #ff544b
 }
 .battle-damage small {
   display:block;
@@ -1830,6 +1855,22 @@ button {
   border:1px solid #ffffff22;
   border-radius:7px;
   background:linear-gradient(180deg,var(--sky-a),var(--sky-b) 75%,#111a25)
+}
+.stage-preview-pond-party {
+  background:repeating-linear-gradient(175deg,transparent 0 15px,#64e4d522 16px 19px),linear-gradient(180deg,var(--sky-a),var(--sky-b) 75%,#111a25)
+}
+.stage-preview-sunny-side-up {
+  background:radial-gradient(circle at 78% 27%,#ffe29b 0 12px,transparent 13px),linear-gradient(180deg,var(--sky-a),var(--sky-b) 75%,#111a25)
+}
+.stage-preview-starlight-stage {
+  background:radial-gradient(circle at 20% 25%,#fff 0 1px,transparent 2px),radial-gradient(circle at 76% 35%,#fff 0 1px,transparent 2px),linear-gradient(180deg,var(--sky-a),var(--sky-b) 75%,#111a25)
+}
+.stage-preview-battlefield-falls:before,
+.stage-preview-green-hill-loop:before,
+.stage-preview-skyworld-lift:before,
+.stage-preview-dream-tree:before,
+.stage-preview-rainbow-story:before {
+  display:none
 }
 .stage-preview:before {
   content:'';

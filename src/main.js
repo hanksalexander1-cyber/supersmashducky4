@@ -9,7 +9,7 @@ import { createPeerRoom } from './network/peer-room.js';
 import { createControlSettings } from './ui/controls.js';
 import { createRosterUI } from './ui/roster.js';
 import {
-  API_URL, COLORS, CONTROL_LABELS, DEFAULT_CONTROLS, SHEETS, SPRITE_SHEET, STAGES, TIMING,
+  API_URL, COLORS, CONTROL_LABELS, DEFAULT_CONTROLS, SHEETS, SPRITE_SHEET, STAGES, TIMING, getStageLayout,
 } from './config.js';
 
 
@@ -215,7 +215,7 @@ function enterCharacterSelection() {
   }
   
 const emptyInput = () => ({
-    left:false,right:false,jump:false,up:false,down:false,attack:false,smash:false,special:false,shield:false
+    left:false,right:false,jump:false,up:false,down:false,attack:false,smash:false,special:false,dropItem:false,shield:false
   });
 const simulation = createGameSimulation(runtime, emptyInput);
 const peerRoom = createPeerRoom(runtime, {
@@ -259,9 +259,25 @@ function maybeStartGame() {
 }
   
 function renderStageMenu() {
-    const host=isHost;querySelector('#stageIntro').textContent=host?'Everyone is ready. Pick a layout, then start the battle.':'The host is choosing the stage...';querySelector('#stageWaitMessage').textContent=host?'Players ready: '+players.filter(p=>p.online!==false&&p.ready).length+'/'+players.filter(p=>p.online!==false).length:'Waiting for the host to start the battle.';querySelector('#stageCards').innerHTML=STAGES.map(stage=> {
-      const selected=stage.id===selectedStageId;const ledges=stage.platforms.map(p=>'<i style="left:'+((p.x+p.w/2)/960*100)+'%;top:'+Math.max(5,Math.min(78,(p.y-250)/180*80))+'%"></i>').join('');return '<button class="stage-card '+(selected?'selected':'')+'" type="button" data-stage-id="'+stage.id+'" '+(!host?'disabled':'')+' style="--sky-a:'+stage.sky[0]+';--sky-b:'+stage.sky[1]+';--stage-top:'+stage.top+'"><span class="stage-selected">'+(selected?'SELECTED':'')+'</span><strong>'+stage.name+'</strong><small>'+stage.tag+'</small><div class="stage-preview">'+ledges+'</div><small>'+stage.platforms.length+' floating platforms</small></button>'
-    }).join('');querySelector('#startBattleButton').hidden=!host;querySelector('#stageBackButton').hidden=!host;querySelector('#startBattleButton').disabled=!host||players.filter(p=>p.online!==false).length<2||players.some(p=>p.online!==false&&!p.ready)
+  const host = isHost;
+  querySelector('#stageIntro').textContent = host
+    ? 'Choose a distinct arena. Stage sizes range from compact to huge.'
+    : 'The host is choosing the stage...';
+  querySelector('#stageWaitMessage').textContent = host
+    ? `Players ready: ${players.filter((player) => player.online !== false && player.ready).length}/${players.filter((player) => player.online !== false).length}`
+    : 'Waiting for the host to start the battle.';
+  querySelector('#stageCards').innerHTML = STAGES.map((stage) => {
+    const layout = getStageLayout(stage.id);
+    const selected = stage.id === selectedStageId;
+    const platforms = stage.hidePlatforms ? '' : layout.platforms.map((platform) => (
+      `<i style="left:${(platform.x + platform.w / 2) / layout.width * 100}%;top:${Math.max(5, Math.min(78, (platform.y - 155) / 250 * 80))}%;width:${Math.max(8, platform.w / layout.width * 100)}%"></i>`
+    )).join('');
+    return `<button class="stage-card ${selected ? 'selected' : ''}" type="button" data-stage-id="${stage.id}" ${host ? '' : 'disabled'} style="--sky-a:${stage.sky[0]};--sky-b:${stage.sky[1]};--stage-top:${stage.top}"><span class="stage-selected">${selected ? 'SELECTED' : ''}</span><strong>${stage.name}</strong><small>${stage.tag}</small><div class="stage-preview stage-preview-${stage.id}" style="background-image:linear-gradient(#15243644,#15243688),url('${stage.background}');background-size:cover;background-position:center;background-repeat:no-repeat">${platforms}</div><small>${layout.width} × ${layout.floorY + 120} arena · ${layout.platforms.length} platforms</small></button>`;
+  }).join('');
+  querySelector('#startBattleButton').hidden = !host;
+  querySelector('#stageBackButton').hidden = !host;
+  querySelector('#startBattleButton').disabled = !host || players.filter((player) => player.online !== false).length < 2
+    || players.some((player) => player.online !== false && !player.ready);
   }
   
 // Match setup and network snapshots
@@ -290,11 +306,11 @@ function startMatch() {
 }
 function snapshotGame() {
     return {
-      active:game.active,stageId:game.stageId||selectedStageId,stageSelection:stageSelectionOpen,finished:game.finished,winnerId:game.winnerId,inputs:game.inputs,entities:game.entities.map(e=>( {
+      active:game.active,stageId:game.stageId||selectedStageId,stageLayout:game.stageLayout,stageSelection:stageSelectionOpen,finished:game.finished,winnerId:game.winnerId,inputs:game.inputs,entities:game.entities.map(e=>( {
         ...e,stats: {
           ...e.stats
         }
-})),projectiles:game.projectiles||[],smashBall:game.smashBall||null,cinematic:game.cinematic||null,particles:game.particles,shake:game.shake
+        })),projectiles:game.projectiles||[],items:game.items||[],itemSpawnIn:game.itemSpawnIn,elapsedTime:game.elapsedTime||0,koEffects:game.koEffects||[],smashBall:game.smashBall||null,cinematic:game.cinematic||null,particles:game.particles,shake:game.shake
     }
 }
   
@@ -316,7 +332,7 @@ function applySnapshot(s) {
         }
 })
     }
-    else game.entities=incoming;game.stageId=s.stageId||game.stageId||selectedStageId;game.inputs=s.inputs||game.inputs;game.projectiles=s.projectiles||[];game.smashBall=s.smashBall||null;game.cinematic=s.cinematic||null;game.particles=s.particles||[];game.shake=s.shake||0;game.active=!!s.active;game.finished=!!s.finished;game.winnerId=s.winnerId||null;if(game.active) {
+    else game.entities=incoming;game.stageId=s.stageId||game.stageId||selectedStageId;game.stageLayout=s.stageLayout||getStageLayout(game.stageId);game.inputs=s.inputs||game.inputs;game.projectiles=s.projectiles||[];game.items=s.items||[];game.itemSpawnIn=s.itemSpawnIn||0;game.elapsedTime=s.elapsedTime||0;game.koEffects=s.koEffects||[];game.smashBall=s.smashBall||null;game.cinematic=s.cinematic||null;game.particles=s.particles||[];game.shake=s.shake||0;game.active=!!s.active;game.finished=!!s.finished;game.winnerId=s.winnerId||null;if(game.active) {
       querySelector('#battleRoomCode').textContent=roomCode;querySelector('#battleResult').hidden=!game.finished;if(game.finished) {
         const winner=game.entities.find(e=>e.id===game.winnerId);querySelector('#battleResult').innerHTML=winner?escapeHtml(winner.name)+' wins!<span>Battle complete - run it back?</span><button class="btn btn-gold" data-rematch>Rematch</button>':'Battle complete';querySelector('#battleStatus').textContent='Battle complete'
       }
@@ -326,7 +342,7 @@ function applySnapshot(s) {
   
 function renderBattleHud() {
     const local=getCurrentPlayer();querySelector('#battleHud').innerHTML=game.entities.map(e=> {
-      const d=ducks.find(x=>x.id===e.duckId),image=d?getDuckGraphic(d):'';return `<div class="battle-fighter ${e.ultimateReady?'ultimate-ready':''}" style="--pcolor:${e.color}"><img class="battle-avatar" src="${image.startsWith('<img')?(spriteCache.get(e.duckId)||''):''}" alt=""><div class="battle-meta"><div class="battle-player">P${e.slot} · ${escapeHtml(e.name)}${e.id===local?.id?' (YOU)':''}</div><div class="battle-duck">${escapeHtml(d?.name||'Duck')}</div>${e.ultimateReady?'<div class="ultimate-badge">FACE + SPECIAL</div>':''}<div class="stock-dots">${[0,1,2].map(i=>`<i class="${i>=e.stocks?'lost':''}"></i>`).join('')}</div><div class="focus-track"><i style="width:${Math.max(0,e.focus||0)}%"></i></div><div class="guard-track"><i style="width:${Math.max(0,e.guard||0)}%"></i></div></div><div class="battle-damage">${Math.round(e.damage)}%<small>FOCUS ${Math.round(e.focus)}%</small></div></div>`
+      const d=ducks.find(x=>x.id===e.duckId),image=d?getDuckGraphic(d):'',damage=Math.max(0,e.damage||0),heat=Math.min(100,damage),itemNames={blaster:'Blaster · attack to fire',bomb:'Bomb · attack to throw',banana:'Banana · attack to throw',isaac:'Isaac · attack to summon'},itemInfo=e.weapon?`<div class="item-equipped">${itemNames[e.weapon.type]||'Item · attack to use'} (${e.weapon.ammo})</div>`:'';return `<div class="battle-fighter ${e.ultimateReady?'ultimate-ready':''}" style="--pcolor:${e.color};--damage-heat:${heat}%"><img class="battle-avatar" src="${image.startsWith('<img')?(spriteCache.get(e.duckId)||''):''}" alt=""><div class="battle-meta"><div class="battle-player">P${e.slot} · ${escapeHtml(e.name)}${e.id===local?.id?' (YOU)':''}</div><div class="battle-duck">${escapeHtml(d?.name||'Duck')}</div>${itemInfo}${e.ultimateReady?'<div class="ultimate-badge">FACE + SPECIAL</div>':''}<div class="stock-dots">${[0,1,2].map(i=>`<i class="${i>=e.stocks?'lost':''}"></i>`).join('')}</div><div class="focus-track"><i style="width:${Math.max(0,e.focus||0)}%"></i></div><div class="guard-track"><i style="width:${Math.max(0,e.guard||0)}%"></i></div><div class="damage-track"><i></i></div></div><div class="battle-damage">${Math.round(damage)}%<small>FOCUS ${Math.round(e.focus)}%</small></div></div>`
     }).join('')
   }
   
