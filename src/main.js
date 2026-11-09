@@ -7,9 +7,10 @@ import { createGameSimulation } from './game/simulation.js';
 import { createBattleRenderer } from './game/renderer.js';
 import { createPeerRoom } from './network/peer-room.js';
 import { createControlSettings } from './ui/controls.js';
+import { createPlatformEditor } from './ui/platform-editor.js';
 import { createRosterUI } from './ui/roster.js';
 import {
-  API_URL, COLORS, CONTROL_LABELS, DEFAULT_CONTROLS, SHEETS, SPRITE_SHEET, STAGES, TIMING, getStageLayout,
+  API_URL, BATTLE_MODES, COLORS, CONTROL_LABELS, DEFAULT_CONTROLS, SHEETS, SPRITE_SHEET, STAGES, TIMING, getStageLayout, setStageGround, setStagePlatforms,
 } from './config.js';
 
 
@@ -27,6 +28,7 @@ let connections = new Map();
 let roomCode = '';
 let isHost = false;
 let myPlayerId = '';
+let modeVotes = {};
 let hoverDuck = null;
 let toastTimer;
 
@@ -50,6 +52,7 @@ let gameFrame = 0;
 let lastInputSend = 0;
 let lastSnapshotSend = 0;
 let lastHudRender = 0;
+let showPlatforms = false;
 let pressedKeys = new Set();
 let remoteTargets = new Map();
 const runtime = {
@@ -64,6 +67,8 @@ const runtime = {
   set roomCode(value) { roomCode = value; },
   get myPlayerId() { return myPlayerId; },
   set myPlayerId(value) { myPlayerId = value; },
+  get modeVotes() { return modeVotes; },
+  set modeVotes(value) { modeVotes = value || {}; },
   get isHost() { return isHost; },
   set isHost(value) { isHost = value; },
   get stageSelectionOpen() { return stageSelectionOpen; },
@@ -85,6 +90,8 @@ const runtime = {
   get pressedKeys() { return pressedKeys; },
   get game() { return game; },
   set game(value) { game = value; },
+  get showPlatforms() { return showPlatforms; },
+  set showPlatforms(value) { showPlatforms = value; },
   get pendingGameEvents() { return pendingGameEvents; },
   set matchResultRendered(value) { matchResultRendered = value; },
 };
@@ -254,7 +261,7 @@ function toggleReady() {
   
 function maybeStartGame() {
     if(!isHost||game.active)return;const active=players.filter(p=>p.online!==false);if(active.length<2||active.some(p=>!p.duckId||!p.ready))return;if(!stageSelectionOpen) {
-      stageSelectionOpen=true;setActiveScreen('stage');renderStageMenu();querySelector('#stageRoomCode').textContent=roomCode;broadcastState()
+      stageSelectionOpen=true;modeVotes={};setActiveScreen('stage');renderStageMenu();querySelector('#stageRoomCode').textContent=roomCode;broadcastState()
     }
 }
   
@@ -276,9 +283,37 @@ function renderStageMenu() {
   }).join('');
   querySelector('#startBattleButton').hidden = !host;
   querySelector('#stageBackButton').hidden = !host;
+  querySelector('#editPlatformsButton').hidden = !host;
   querySelector('#startBattleButton').disabled = !host || players.filter((player) => player.online !== false).length < 2
     || players.some((player) => player.online !== false && !player.ready);
+  renderModeVotes();
   }
+
+function renderModeVotes() {
+  const selectedMode = modeVotes[myPlayerId];
+  const eligibleIds = new Set(players.filter((player) => player.online !== false).map((player) => player.id));
+  for (const button of querySelectorAll('[data-rule-mode]')) {
+    const mode = button.dataset.ruleMode;
+    const votes = Object.entries(modeVotes).filter(([playerId, vote]) => eligibleIds.has(playerId) && vote === mode).length;
+    button.classList.toggle('selected', selectedMode === mode);
+    button.setAttribute('aria-pressed', String(selectedMode === mode));
+    button.querySelector('[data-vote-count]').textContent = `${votes} vote${votes === 1 ? '' : 's'}`;
+  }
+  const mode = BATTLE_MODES.find((candidate) => candidate.id === selectedMode);
+  const voteCount = Object.keys(modeVotes).filter((playerId) => eligibleIds.has(playerId)).length;
+  querySelector('#ruleVoteStatus').textContent = mode ? `Your vote: ${mode.name}` : voteCount ? 'Choose your battle rules' : 'No votes yet · defaults to Stock';
+}
+
+function resolveBattleMode() {
+  const eligibleIds = new Set(players.filter((player) => player.online !== false).map((player) => player.id));
+  const votes = Object.entries(modeVotes).filter(([playerId]) => eligibleIds.has(playerId)).map(([, mode]) => mode);
+  const counts = BATTLE_MODES.map((mode) => ({ mode, count: votes.filter((vote) => vote === mode.id).length }));
+  const highest = Math.max(0, ...counts.map((entry) => entry.count));
+  const tied = counts.filter((entry) => entry.count === highest);
+  if (highest === 0) return 'stock';
+  const hostVote = modeVotes[myPlayerId];
+  return (tied.find((entry) => entry.mode.id === hostVote) || tied[0]).mode.id;
+}
   
 // Match setup and network snapshots
 function startMatch() {
@@ -287,10 +322,12 @@ function startMatch() {
   if (activePlayers.length < 2 || activePlayers.some((player) => !player.duckId || !player.ready)) return;
 
   stageSelectionOpen = false;
-  game = simulation.createMatch(activePlayers, selectedStageId);
+  const rulesMode = resolveBattleMode();
+  game = simulation.createMatch(activePlayers, selectedStageId, rulesMode);
   remoteTargets.clear();
   matchResultRendered = false;
   querySelector('#battleRoomCode').textContent = roomCode;
+  querySelector('#editMapButton').hidden = !isHost;
   querySelector('#battleResult').hidden = true;
   querySelector('#battleResult').innerHTML = '';
   querySelector('#battleStatus').textContent = 'BRAWL!';
@@ -306,7 +343,7 @@ function startMatch() {
 }
 function snapshotGame() {
     return {
-      active:game.active,stageId:game.stageId||selectedStageId,stageLayout:game.stageLayout,stageSelection:stageSelectionOpen,finished:game.finished,winnerId:game.winnerId,inputs:game.inputs,entities:game.entities.map(e=>( {
+      active:game.active,stageId:game.stageId||selectedStageId,stageLayout:game.stageLayout,rulesMode:game.rulesMode,timeRemaining:game.timeRemaining,stageSelection:stageSelectionOpen,finished:game.finished,winnerId:game.winnerId,inputs:game.inputs,entities:game.entities.map(e=>( {
         ...e,stats: {
           ...e.stats
         }
@@ -332,19 +369,33 @@ function applySnapshot(s) {
         }
 })
     }
-    else game.entities=incoming;game.stageId=s.stageId||game.stageId||selectedStageId;game.stageLayout=s.stageLayout||getStageLayout(game.stageId);game.inputs=s.inputs||game.inputs;game.projectiles=s.projectiles||[];game.items=s.items||[];game.itemSpawnIn=s.itemSpawnIn||0;game.elapsedTime=s.elapsedTime||0;game.koEffects=s.koEffects||[];game.smashBall=s.smashBall||null;game.cinematic=s.cinematic||null;game.particles=s.particles||[];game.shake=s.shake||0;game.active=!!s.active;game.finished=!!s.finished;game.winnerId=s.winnerId||null;if(game.active) {
+    else game.entities=incoming;game.stageId=s.stageId||game.stageId||selectedStageId;game.stageLayout=s.stageLayout||getStageLayout(game.stageId);game.rulesMode=s.rulesMode||'stock';game.timeRemaining=s.timeRemaining??null;game.inputs=s.inputs||game.inputs;game.projectiles=s.projectiles||[];game.items=s.items||[];game.itemSpawnIn=s.itemSpawnIn||0;game.elapsedTime=s.elapsedTime||0;game.koEffects=s.koEffects||[];game.smashBall=s.smashBall||null;game.cinematic=s.cinematic||null;game.particles=s.particles||[];game.shake=s.shake||0;game.active=!!s.active;game.finished=!!s.finished;game.winnerId=s.winnerId||null;querySelector('#editMapButton').hidden=!isHost||!game.active;if(game.active) {
       querySelector('#battleRoomCode').textContent=roomCode;querySelector('#battleResult').hidden=!game.finished;if(game.finished) {
-        const winner=game.entities.find(e=>e.id===game.winnerId);querySelector('#battleResult').innerHTML=winner?escapeHtml(winner.name)+' wins!<span>Battle complete - run it back?</span><button class="btn btn-gold" data-rematch>Rematch</button>':'Battle complete';querySelector('#battleStatus').textContent='Battle complete'
+        const winner=game.entities.find(e=>e.id===game.winnerId);querySelector('#battleResult').innerHTML=winner?escapeHtml(winner.name)+' wins!<span>Battle complete - run it back?</span><button class="btn btn-gold" data-rematch>Rematch</button>':'Draw<span>Battle complete - run it back?</span><button class="btn btn-gold" data-rematch>Rematch</button>';querySelector('#battleStatus').textContent='Battle complete'
       }
       else if(game.cinematic)querySelector('#battleStatus').textContent='FINAL SMASH!';else if(game.smashBall)querySelector('#battleStatus').textContent='SMASH BALL! Break it before your rival!';else if(localFighter()?.ultimateReady)querySelector('#battleStatus').textContent='FINAL SMASH READY - FACE YOUR OPPONENT + SPECIAL';else querySelector('#battleStatus').textContent='Fight!';setActiveScreen('game');renderUltimateCutscene();querySelector('#smashWarning').hidden=!game.smashBall;renderBattleHud()
     }
 }
   
 function renderBattleHud() {
-    const local=getCurrentPlayer();querySelector('#battleHud').innerHTML=game.entities.map(e=> {
-      const d=ducks.find(x=>x.id===e.duckId),image=d?getDuckGraphic(d):'',damage=Math.max(0,e.damage||0),heat=Math.min(100,damage),itemNames={blaster:'Blaster · attack to fire',bomb:'Bomb · attack to throw',banana:'Banana · attack to throw',isaac:'Isaac · attack to summon'},itemInfo=e.weapon?`<div class="item-equipped">${itemNames[e.weapon.type]||'Item · attack to use'} (${e.weapon.ammo})</div>`:'';return `<div class="battle-fighter ${e.ultimateReady?'ultimate-ready':''}" style="--pcolor:${e.color};--damage-heat:${heat}%"><img class="battle-avatar" src="${image.startsWith('<img')?(spriteCache.get(e.duckId)||''):''}" alt=""><div class="battle-meta"><div class="battle-player">P${e.slot} · ${escapeHtml(e.name)}${e.id===local?.id?' (YOU)':''}</div><div class="battle-duck">${escapeHtml(d?.name||'Duck')}</div>${itemInfo}${e.ultimateReady?'<div class="ultimate-badge">FACE + SPECIAL</div>':''}<div class="stock-dots">${[0,1,2].map(i=>`<i class="${i>=e.stocks?'lost':''}"></i>`).join('')}</div><div class="focus-track"><i style="width:${Math.max(0,e.focus||0)}%"></i></div><div class="guard-track"><i style="width:${Math.max(0,e.guard||0)}%"></i></div><div class="damage-track"><i></i></div></div><div class="battle-damage">${Math.round(damage)}%<small>FOCUS ${Math.round(e.focus)}%</small></div></div>`
-    }).join('')
+  const local = getCurrentPlayer();
+  const stamina = game.rulesMode === 'stamina';
+  querySelector('#battleHud').innerHTML = game.entities.map((fighter) => {
+    const duck = ducks.find((candidate) => candidate.id === fighter.duckId);
+    const damage = Math.max(0, fighter.damage || 0);
+    const hp = Math.max(0, 100 - damage);
+    const bar = stamina ? hp : Math.min(100, damage);
+    const itemNames = { blaster: 'Blaster · attack to fire', bomb: 'Bomb · attack to throw', banana: 'Banana · attack to throw', isaac: 'Isaac · attack to summon' };
+    const itemInfo = fighter.weapon ? `<div class="item-equipped">${itemNames[fighter.weapon.type] || 'Item · attack to use'} (${fighter.weapon.ammo})</div>` : '';
+    const stocks = stamina ? '' : `<div class="stock-dots">${[0, 1, 2].map((index) => `<i class="${index >= fighter.stocks ? 'lost' : ''}"></i>`).join('')}</div>`;
+    const meterLabel = stamina ? `${Math.ceil(hp)} HP` : `${Math.round(damage)}%`;
+    return `<div class="battle-fighter ${fighter.ultimateReady ? 'ultimate-ready' : ''}" style="--pcolor:${fighter.color};--damage-heat:${bar}%"><img class="battle-avatar" src="${spriteCache.get(fighter.duckId) || ''}" alt=""><div class="battle-meta"><div class="battle-player">P${fighter.slot} · ${escapeHtml(fighter.name)}${fighter.id === local?.id ? ' (YOU)' : ''}</div><div class="battle-duck">${escapeHtml(duck?.name || 'Duck')}</div>${itemInfo}${fighter.ultimateReady ? '<div class="ultimate-badge">FACE + SPECIAL</div>' : ''}${stocks}<div class="focus-track"><i style="width:${Math.max(0, fighter.focus || 0)}%"></i></div><div class="guard-track"><i style="width:${Math.max(0, fighter.guard || 0)}%"></i></div><div class="damage-track"><i></i></div></div><div class="battle-damage">${meterLabel}<small>${stamina ? 'STAMINA' : `FOCUS ${Math.round(fighter.focus)}%`}</small></div></div>`;
+  }).join('');
+  if (game.rulesMode === 'timed' && game.timeRemaining != null && game.active && !game.finished) {
+    const seconds = Math.ceil(game.timeRemaining / 60);
+    querySelector('#battleStatus').textContent = `TIME ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · TIMED BATTLE`;
   }
+}
   
 function sendInput() {
     lastInputSend=performance.now();if(isHost) {
@@ -383,7 +434,7 @@ const { bindControlSettings, bindBattleInputs } = controlSettings;
   
 function broadcastState() {
     renderPlayers();renderRoster();if(hoverDuck)renderDuckDetails(hoverDuck);const packet= {
-      type:'state',players,stageSelection:stageSelectionOpen,stageId:selectedStageId
+      type:'state',players,stageSelection:stageSelectionOpen,stageId:selectedStageId,modeVotes
     };for(const conn of connections.values())if(conn.open)conn.send(packet);maybeStartGame()
   }
   
@@ -418,7 +469,7 @@ function renderMatchResult() {
   const winner = game.entities.find((fighter) => fighter.id === game.winnerId);
   querySelector('#battleResult').innerHTML = winner
     ? escapeHtml(winner.name) + ' wins!<span>Battle complete ? run it back?</span><button class="btn btn-gold" data-rematch>Rematch</button>'
-    : 'No winner<span>Everyone was knocked out</span>';
+    : (game.rulesMode === 'timed' ? 'Draw<span>The timed battle ended in a tie.</span>' : 'No winner<span>Everyone was knocked out</span>');
   querySelector('#battleResult').hidden = false;
   querySelector('#battleStatus').textContent = 'Battle complete';
   matchResultRendered = true;
@@ -463,6 +514,19 @@ function restartSelection() {
       type:'select-again',players
     })
   }
+
+function returnToMapEditor() {
+  if (!isHost || !game.active) return;
+  selectedStageId = game.stageId || selectedStageId;
+  game.active = false;
+  game.finished = false;
+  game.cinematic = null;
+  stageSelectionOpen = true;
+  setActiveScreen('stage');
+  renderStageMenu();
+  querySelector('#stageRoomCode').textContent = roomCode;
+  broadcastState();
+}
   
 // UI event wiring
 function bindUiEvents() {
@@ -473,7 +537,26 @@ querySelector('#stageCards').addEventListener('click', (event) => {
   renderStageMenu();
   broadcastState();
 });
+querySelector('.rules-options').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-rule-mode]');
+  if (!button || !stageSelectionOpen || game.active) return;
+  if (isHost) {
+    modeVotes = { ...modeVotes, [myPlayerId]: button.dataset.ruleMode };
+    renderModeVotes();
+    broadcastState();
+  } else {
+    const connection = connections.get('host');
+    if (connection?.open) connection.send({ type: 'mode-vote', mode: button.dataset.ruleMode });
+  }
+});
 querySelector('#startBattleButton').addEventListener('click', startMatch);
+querySelector('#editMapButton').addEventListener('click', returnToMapEditor);
+querySelector('#platformVisibilityToggle').addEventListener('click', () => {
+  showPlatforms = !showPlatforms;
+  const button = querySelector('#platformVisibilityToggle');
+  button.textContent = showPlatforms ? 'Hide extra platforms' : 'Show all platforms';
+  button.setAttribute('aria-pressed', String(showPlatforms));
+});
 querySelector('#stageBackButton').addEventListener('click', () => {
   if (!isHost) return;
   stageSelectionOpen = false;
@@ -488,6 +571,19 @@ querySelector('#readyButton').addEventListener('click', toggleReady);
 querySelector('#exitBattle').addEventListener('click', leaveRoom);
 bindControlSettings();
 bindBattleInputs();
+
+createPlatformEditor({
+  stages: STAGES,
+  getStageLayout,
+  setStageGround,
+  setStagePlatforms,
+  querySelector,
+  getSelectedStageId: () => selectedStageId,
+  onChange: () => {
+    if (game.active && game.stageId === selectedStageId) game.stageLayout = getStageLayout(selectedStageId);
+    renderStageMenu();
+  },
+});
 
 querySelector('#createRoom').addEventListener('click', hostRoom);
 querySelector('#joinRoom').addEventListener('click', joinExisting);

@@ -1,7 +1,7 @@
 // Authoritative game rules and frame-by-frame state updates: fighter movement,
 // attacks, damage and knockback, platforms and ledges, Smash Ball effects,
 // respawns, and match outcomes. It updates runtime data without drawing UI.
-import { COLORS, COMBAT, ITEMS, KO_EFFECT, LEDGE, PHYSICS, PLATFORM_DROP, SPECIAL, SPAWN_PLATFORM, getStageLayout } from '../config.js';
+import { BATTLE_RULES, COLORS, COMBAT, ITEMS, KO_EFFECT, LEDGE, PHYSICS, PLATFORM_DROP, SPECIAL, SPAWN_PLATFORM, getStageLayout } from '../config.js';
 
 export function createGameSimulation(runtime, emptyInput) {
 function createFighter(player, index, playerCount, stageLayout) {
@@ -20,7 +20,7 @@ function createFighter(player, index, playerCount, stageLayout) {
     vx: 0,
     vy: 0,
     damage: 0,
-    stocks: 67,
+    stocks: BATTLE_RULES.startingStocks,
     focus: 0,
     guard: 100,
     facing: index % 2 ? -1 : 1,
@@ -70,12 +70,14 @@ function createFighter(player, index, playerCount, stageLayout) {
     },
   };
 }
-function createMatch(activePlayers, stageId) {
+function createMatch(activePlayers, stageId, rulesMode = 'stock') {
   const stageLayout = getStageLayout(stageId);
   const inputs = Object.fromEntries(activePlayers.map((player) => [player.id, emptyInput()]));
   return {
     active: true,
     stageId,
+    rulesMode,
+    timeRemaining: rulesMode === 'timed' ? BATTLE_RULES.timedDuration : null,
     stageLayout,
     entities: activePlayers.map((player, index) => createFighter(player, index, activePlayers.length, stageLayout)),
     inputs,
@@ -120,6 +122,13 @@ function applyHit(attacker,target,power,special=false,vertical='') {
 
   const damage = power + attacker.stats.strength * (special ? 0.65 : 0.38);
   target.damage += damage;
+  if (runtime.game.rulesMode === 'stamina' && target.damage >= BATTLE_RULES.staminaHealth) {
+    target.damage = BATTLE_RULES.staminaHealth;
+    target.stocks = 0;
+    target.eliminated = true;
+    target.respawn = 0;
+    target.weapon = null;
+  }
   const knockback = Math.min(COMBAT.maxKnockback, COMBAT.baseKnockback
     + damage * COMBAT.attackDamageKnockback
     + target.damage * COMBAT.damagePercentKnockback);
@@ -305,8 +314,10 @@ function updateItems(deltaTime) {
   const stage = game.stageLayout;
   game.itemSpawnIn -= deltaTime;
   if (game.itemSpawnIn <= 0 && game.items.length < ITEMS.maxActive) {
-    const itemTypes = ['blaster', 'bomb', 'banana', 'star', 'heart', 'shield', 'isaac'];
-    const type = itemTypes[Math.floor(Math.random() * itemTypes.length)];
+    const itemTypes = ['bomb', 'banana', 'star', 'heart', 'shield', 'isaac'];
+    const type = Math.random() < ITEMS.gunSpawnChance
+      ? 'blaster'
+      : itemTypes[Math.floor(Math.random() * itemTypes.length)];
     game.items.push({ type, x: stage.width * (0.12 + Math.random() * 0.76), y: 105, vy: 0, life: ITEMS.lifetime });
     game.itemSpawnIn = ITEMS.spawnDelay;
   }
@@ -427,6 +438,9 @@ function updateSmashBall(deltaTime) {
 function updateGameSimulation(deltaTime) {
   if (!runtime.isHost || !runtime.game.active || runtime.game.finished) return;
   runtime.game.elapsedTime += deltaTime;
+  if (runtime.game.rulesMode === 'timed' && runtime.game.timeRemaining > 0) {
+    runtime.game.timeRemaining = Math.max(0, runtime.game.timeRemaining - deltaTime);
+  }
   if (runtime.game.cinematic) {
     updateCinematic(deltaTime);
     return;
@@ -559,7 +573,9 @@ function updateFighterMovementInput(fighter, input, deltaTime) {
   if (input.right) fighter.facing = 1;
   const downPressed = input.down && !fighter.downHeld;
   fighter.downHeld = !!input.down;
-  if (downPressed && fighter.groundedPlatformY !== null) dropFighterThroughPlatform(fighter);
+  if (downPressed && fighter.groundedPlatformY !== null && !isOnSolidPlatform(fighter)) {
+    dropFighterThroughPlatform(fighter);
+  }
   const jumpPressed = input.jump && !fighter.jumpHeld;
   fighter.jumpHeld = !!input.jump;
   if (fighter.grounded) fighter.jumpCount = 0;
@@ -573,6 +589,14 @@ function dropFighterThroughPlatform(fighter) {
   fighter.groundedPlatformY = null;
   fighter.grounded = false;
   fighter.vy = Math.max(fighter.vy, PLATFORM_DROP.initialSpeed);
+}
+function isOnSolidPlatform(fighter) {
+  return runtime.game.stageLayout.platforms.some((platform) => (
+    platform.solid
+    && platform.y === fighter.groundedPlatformY
+    && fighter.x >= platform.x - 20
+    && fighter.x <= platform.x + platform.w + 20
+  ));
 }
 function performFighterJump(fighter) {
   fighter.jumpCount += 1;
@@ -806,7 +830,7 @@ function dropFighterFromLedge(fighter) {
   fighter.vy = LEDGE.dropSpeed;
 }
 function landOnPlatform(fighter, platform, previousY, wasGrounded) {
-  if (fighter.dropThroughTimer > 0 && fighter.dropThroughPlatformY === platform.y) return;
+  if (!platform.solid && fighter.dropThroughTimer > 0 && fighter.dropThroughPlatformY === platform.y) return;
   const crossesPlatform = fighter.vy >= 0 && previousY + 38 <= platform.y && fighter.y + 38 >= platform.y;
   const overlapsPlatform = fighter.x > platform.x - 20 && fighter.x < platform.x + platform.w + 20;
   if (!crossesPlatform || !overlapsPlatform) return;
@@ -843,7 +867,11 @@ function handleFighterRingOut(fighter) {
   if (fighter.x < stage.blastLeft || fighter.x > stage.blastRight) {
     runtime.game.koEffects.push({ side: fighter.x < 0 ? 'left' : 'right', y: Math.max(48, Math.min(stage.floorY - 38, fighter.y)), life: KO_EFFECT.lifetime, max: KO_EFFECT.lifetime });
   }
-  fighter.stocks -= 1;
+  if (runtime.game.rulesMode === 'stamina') {
+    fighter.damage = BATTLE_RULES.staminaHealth;
+    fighter.stocks = 0;
+    fighter.eliminated = true;
+  } else fighter.stocks -= 1;
   if (fighter.stocks <= 0) fighter.eliminated = true;
   else fighter.respawn = 55;
   fighter.weapon = null;
@@ -884,11 +912,16 @@ function updateProjectiles(deltaTime) {
 }
 function checkForMatchWinner() {
   const remainingFighters = runtime.game.entities.filter((fighter) => !fighter.eliminated);
-  if (remainingFighters.length > 1) return;
+  let winner = remainingFighters[0] || null;
+  if (remainingFighters.length > 1 && runtime.game.rulesMode === 'timed' && runtime.game.timeRemaining <= 0) {
+    const ranked = [...remainingFighters].sort((left, right) => right.stocks - left.stocks || left.damage - right.damage);
+    const tied = ranked.length > 1 && ranked[0].stocks === ranked[1].stocks && ranked[0].damage === ranked[1].damage;
+    winner = tied ? null : ranked[0];
+  } else if (remainingFighters.length > 1) return;
   runtime.game.smashBall = null;
   runtime.game.projectiles = [];
   runtime.game.finished = true;
-  runtime.game.winnerId = remainingFighters[0]?.id || null;
+  runtime.game.winnerId = winner?.id || null;
   runtime.game.needsFinalSnapshot = true;
   runtime.matchResultRendered = false;
 }

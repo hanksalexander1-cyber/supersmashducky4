@@ -101,21 +101,21 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
   }
 
   function drawStagePlatforms(context, stage) {
-    if (stage.hidePlatforms) return;
+    if (stage.hidePlatforms && !runtime.showPlatforms) return;
     const visiblePlatforms = [...stage.platforms, { x: stage.playableLeft, w: stage.playableRight - stage.playableLeft, y: stage.floorY }];
     for (const platform of visiblePlatforms) {
       context.save();
-      context.shadowColor = stage.top;
+      context.shadowColor = platform.solid ? '#ffe584' : stage.top;
       context.shadowBlur = 13;
       const fill = context.createLinearGradient(0, platform.y, 0, platform.y + 17);
-      fill.addColorStop(0, '#526a79');
-      fill.addColorStop(1, '#172633');
+      fill.addColorStop(0, platform.solid ? '#806b36' : '#526a79');
+      fill.addColorStop(1, platform.solid ? '#332b18' : '#172633');
       context.fillStyle = fill;
       context.beginPath();
       context.roundRect(platform.x, platform.y, platform.w, 17, 5);
       context.fill();
       context.shadowBlur = 0;
-      context.fillStyle = stage.top;
+      context.fillStyle = platform.solid ? '#ffe584' : stage.top;
       context.fillRect(platform.x + 5, platform.y, platform.w - 10, 3);
       context.restore();
     }

@@ -1,7 +1,7 @@
 // Manages online room creation and joining with PeerJS, including room-code
 // connections, player identity and color assignment, message routing, and
 // connection cleanup. UI and simulation actions are supplied as callbacks.
-import { PLAYER_COLORS } from '../config.js';
+import { BATTLE_MODES, PLAYER_COLORS } from '../config.js';
 
 const ALLOWED_INPUTS = ['left', 'right', 'jump', 'up', 'down', 'attack', 'smash', 'special', 'dropItem', 'shield'];
 
@@ -186,7 +186,13 @@ export function createPeerRoom(runtime, ui) {
 
   function acceptRoomState(message) {
     runtime.players = message.players;
+    runtime.modeVotes = message.modeVotes || {};
     runtime.stageSelectionOpen = !!message.stageSelection;
+    if (runtime.stageSelectionOpen && runtime.game.active) {
+      runtime.game.active = false;
+      runtime.game.finished = false;
+      runtime.game.cinematic = null;
+    }
     runtime.selectedStageId = message.stageId || runtime.selectedStageId;
     ui.setConnection(true, 'CONNECTED');
     ui.renderRoster();
@@ -256,6 +262,7 @@ export function createPeerRoom(runtime, ui) {
     ready: handleReadyMessage,
     rematch: handleRematchMessage,
     input: handleInputMessage,
+    'mode-vote': handleModeVote,
   };
 
   function handlePeerMessage(playerId, message) {
@@ -288,6 +295,13 @@ export function createPeerRoom(runtime, ui) {
     runtime.game.inputs[playerId] = Object.fromEntries(
       ALLOWED_INPUTS.map((inputName) => [inputName, !!message.input?.[inputName]]),
     );
+  }
+
+  function handleModeVote(playerId, _player, message) {
+    if (!runtime.stageSelectionOpen || runtime.game.active) return;
+    if (!BATTLE_MODES.some((mode) => mode.id === message.mode)) return;
+    runtime.modeVotes = { ...runtime.modeVotes, [playerId]: message.mode };
+    ui.broadcastState();
   }
 
   async function copyRoomCode() {

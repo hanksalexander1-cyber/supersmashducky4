@@ -16,6 +16,12 @@ export const COLORS = {
   blue: '#0845ec', brown: '#683c20', pink: '#f7a4be',
 };
 export const PLAYER_COLORS = ['#ed5143', '#36b8dc', '#f1b735', '#bd65df'];
+export const BATTLE_MODES = [
+  { id: 'stock', name: 'Stock', description: '3 lives · respawn after a KO' },
+  { id: 'stamina', name: 'Stamina', description: '100 HP · first to 0 is out' },
+  { id: 'timed', name: 'Timed', description: '3 minutes · most lives wins' },
+];
+export const BATTLE_RULES = { startingStocks: 3, staminaHealth: 100, timedDuration: 180 * 60 };
 export const STAGES = [
   {
     id: 'ducky-dome', name: 'Ducky Dome', tag: 'CLASSIC', width: 960, floorY: 420,
@@ -40,34 +46,59 @@ export const STAGES = [
     platforms: [{ x: 70, w: 330, y: 355 }, { x: 560, w: 330, y: 355 }, { x: 270, w: 420, y: 285 }, { x: 110, w: 210, y: 215 }, { x: 640, w: 210, y: 215 }, { x: 385, w: 190, y: 170 }],
   },
   {
-    id: 'battlefield-falls', name: 'Battlefield Falls', tag: 'WATERFALL BRAWL', width: 1120, floorY: 378, playableLeft: 165, playableRight: 850, spawnSpacing: 380,
+    id: 'battlefield-falls', name: 'Battlefield Falls', tag: 'WATERFALL BRAWL', width: 1120, floorY: 378, playableLeft: 90, playableRight: 870, spawnSpacing: 380,
     background: 'assets/stages/my-photos/battlefield-falls.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#173b58', '#8ac6e5', '#14334a'], top: '#c5efda',
-    platforms: [{ x: 70, w: 190, y: 320 }, { x: 600, w: 190, y: 320 }, { x: 300, w: 220, y: 175 }],
+    platforms: [{ x: 70, w: 190, y: 320 }, { x: 715, w: 175, y: 320 }, { x: 318, w: 230, y: 175 }],
   },
   {
-    id: 'green-hill-loop', name: 'Green Hill Loop', tag: 'ROLLING HEIGHTS', width: 1360, floorY: 368, playableLeft: 145, playableRight: 890, spawnSpacing: 500,
+    id: 'green-hill-loop', name: 'Green Hill Loop', tag: 'ROLLING HEIGHTS', width: 1360, floorY: 397.6774193548387, playableLeft: 145, playableRight: 901.1, spawnSpacing: 500,
     background: 'assets/stages/my-photos/green-hill-loop.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#2872bf', '#85cff5', '#225345'], top: '#c4ff74',
-    platforms: [{ x: 170, w: 125, y: 155 }, { x: 340, w: 205, y: 105 }, { x: 560, w: 150, y: 205 }, { x: 195, w: 205, y: 250 }, { x: 590, w: 150, y: 265 }],
+    platforms: [
+      { x: 209.7, w: 75.8, y: 285, solid: false },
+      { x: 485.6, w: 191.8, y: 270.3, solid: false },
+      { x: 373.7, w: 174.9, y: 118.6, solid: false },
+      { x: 382.8, w: 111.5, y: 277.4, solid: false },
+      { x: 171.9, w: 216.9, y: 265.2, solid: false },
+      { x: 697.5, w: 223.4, y: 281.8, solid: false },
+    ],
   },
   {
-    id: 'skyworld-lift', name: 'Skyworld Lift', tag: 'FLOATING GARDENS', width: 1200, floorY: 350, playableLeft: 350, playableRight: 625, spawnSpacing: 260,
+    id: 'skyworld-lift', name: 'Skyworld Lift', tag: 'FLOATING GARDENS', width: 1200, floorY: 381.53681436336683, playableLeft: 196.5, playableRight: 766.2, spawnSpacing: 260,
     background: 'assets/stages/my-photos/skyworld-lift.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#2162a2', '#b3e9ff', '#1b6a76'], top: '#ffe483',
-    platforms: [{ x: 185, w: 115, y: 280 }, { x: 350, w: 245, y: 175 }, { x: 650, w: 160, y: 260 }],
+    platforms: [
+      { x: 193.4, w: 572.1, y: 421.7, solid: false },
+      { x: 269.6, w: 122.6, y: 317.7, solid: false },
+      { x: 567.1, w: 119.1, y: 312.7, solid: false },
+      { x: 418, w: 130.3, y: 229.3, solid: false },
+    ],
   },
   {
-    id: 'dream-tree', name: 'Dream Tree', tag: 'TREE TOPS', width: 1440, floorY: 335, playableLeft: 300, playableRight: 680, spawnSpacing: 300,
+    id: 'dream-tree', name: 'Dream Tree', tag: 'TREE TOPS', width: 1440, floorY: 367.3244781783681, playableLeft: 277.5, playableRight: 664.1, spawnSpacing: 300,
     background: 'assets/stages/my-photos/dream-tree.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#1684d2', '#a4e7ff', '#165f88'], top: '#fff08a',
-    platforms: [{ x: 145, w: 155, y: 470 }, { x: 660, w: 155, y: 470 }],
+    platforms: [
+      { x: 19.1, w: 161.8, y: 453.9, solid: false },
+      { x: 756.4, w: 170.9, y: 450.8, solid: false },
+      { x: 692.3, w: 74.5, y: 329.1, solid: false },
+      { x: 179.5, w: 33.5, y: 302.7, solid: false },
+      { x: 213.2, w: 32.6, y: 351.1, solid: false },
+      { x: 665.9, w: 32, y: 380.7, solid: false },
+      { x: 271.5, w: 141.9, y: 321.4, solid: false },
+      { x: 532, w: 143.7, y: 321.4, solid: false },
+    ],
   },
   {
-    id: 'rainbow-story', name: 'Rainbow Story', tag: 'COLORFUL CROSSING', width: 1000, floorY: 310, playableLeft: 285, playableRight: 675, spawnSpacing: 200,
+    id: 'rainbow-story', name: 'Rainbow Story', tag: 'COLORFUL CROSSING', width: 1000, floorY: 421.00642398286936, playableLeft: 48.5, playableRight: 906.9, spawnSpacing: 200,
     background: 'assets/stages/my-photos/rainbow-story.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#1676cf', '#8ee3ff', '#174f82'], top: '#ffd965',
-    platforms: [],
+    platforms: [
+      { x: 154.1, w: 227.4, y: 311.5, solid: false },
+      { x: 282.5, w: 208.3, y: 215.9, solid: false },
+      { x: 593.1, w: 212, y: 276.5, solid: false },
+    ],
   },
 ];
 
@@ -109,10 +140,25 @@ export function getStageLayout(stageId) {
       x: platform.x * horizontalScale,
       w: platform.w * horizontalScale,
       y: platform.y * verticalScale,
+      solid: !!platform.solid,
     })),
   };
   stageLayoutCache.set(stageId, layout);
   return layout;
+}
+export function setStagePlatforms(stageId, platforms) {
+  const stage = STAGES.find((candidate) => candidate.id === stageId);
+  if (!stage) return;
+  stage.platforms = platforms.map(({ x, w, y, solid }) => ({ x, w, y, solid: !!solid }));
+  stageLayoutCache.delete(stageId);
+}
+export function setStageGround(stageId, ground) {
+  const stage = STAGES.find((candidate) => candidate.id === stageId);
+  if (!stage) return;
+  stage.floorY = ground.floorY;
+  stage.playableLeft = ground.playableLeft;
+  stage.playableRight = ground.playableRight;
+  stageLayoutCache.delete(stageId);
 }
 export const SPAWN_PLATFORM = {
   width: 112,
@@ -179,6 +225,7 @@ export const ITEMS = {
   bombDamage: 18,
   bananaDamage: 9,
   isaacDamage: 18,
+  gunSpawnChance: 0.01,
   dropForwardOffset: 35,
   dropOwnerLock: 24,
   isaacCooldown: 24,
