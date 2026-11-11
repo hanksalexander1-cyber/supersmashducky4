@@ -22,13 +22,20 @@ export const BATTLE_MODES = [
   { id: 'timed', name: 'Timed', description: '3 minutes · most lives wins' },
 ];
 export const BATTLE_RULES = { startingStocks: 3, staminaHealth: 100, timedDuration: 180 * 60 };
+export const MATCH_OPTIONS = {
+  stockCounts: [1, 2, 3, 4, 5],
+  itemDelays: { off: Number.MAX_SAFE_INTEGER, low: 900, normal: 480, high: 240 },
+  hazardCycle: 900,
+  hazardDuration: 210,
+  hazardPush: 0.075,
+  reconnectGraceMs: 60_000,
+  spectatorLimit: 4,
+  replayFrameInterval: 300,
+  maximumSharedPlatforms: 128,
+};
+export const MAP_EDITOR_ACCESS_SEQUENCE = ['d', 'u', 'c', 'k', 'y', 'm', 'a', 'p'];
+export const TEST_DUCK_ACCESS_SEQUENCE = ['t', 'e', 's', 't', 'd', 'u', 'c', 'k', 's'];
 export const STAGES = [
-  {
-    id: 'ducky-dome', name: 'Ducky Dome', tag: 'CLASSIC', width: 960, floorY: 420,
-    background: 'assets/stages/kenney-backgrounds/backgroundCastles.png',
-    sky: ['#17283c', '#34566a', '#121d2a'], top: '#b8f1ec',
-    platforms: [{ x: 250, w: 155, y: 320 }, { x: 555, w: 155, y: 320 }, { x: 205, w: 220, y: 370 }, { x: 535, w: 220, y: 370 }, { x: 370, w: 180, y: 255 }, { x: 90, w: 135, y: 270 }, { x: 735, w: 135, y: 270 }],
-  },
   {
     id: 'cloud-steps', name: 'Cloud Steps', tag: 'THREE-TIER', width: 1120, floorY: 425,
     background: 'assets/stages/kenney-backgrounds/backgroundColorGrass.png',
@@ -41,15 +48,13 @@ export const STAGES = [
     platforms: [{ x: 110, w: 300, y: 350 }, { x: 550, w: 300, y: 350 }, { x: 250, w: 260, y: 285 }, { x: 450, w: 260, y: 285 }, { x: 80, w: 170, y: 220 }, { x: 710, w: 170, y: 220 }],
   },
   {
-    id: 'aurora-archipelago', name: 'Aurora Archipelago', tag: 'SKY ISLANDS', width: 1520, floorY: 420,
-    background: 'assets/stages/kenney-backgrounds/backgroundForest.png', sky: ['#091d42', '#315c8a', '#101b35'], top: '#8effef',
-    platforms: [{ x: 70, w: 330, y: 355 }, { x: 560, w: 330, y: 355 }, { x: 270, w: 420, y: 285 }, { x: 110, w: 210, y: 215 }, { x: 640, w: 210, y: 215 }, { x: 385, w: 190, y: 170 }],
-  },
-  {
-    id: 'battlefield-falls', name: 'Battlefield Falls', tag: 'WATERFALL BRAWL', width: 1120, floorY: 378, playableLeft: 90, playableRight: 870, spawnSpacing: 380,
-    background: 'assets/stages/my-photos/battlefield-falls.png', backgroundMode: 'cover', hidePlatforms: true,
-    sky: ['#173b58', '#8ac6e5', '#14334a'], top: '#c5efda',
-    platforms: [{ x: 70, w: 190, y: 320 }, { x: 715, w: 175, y: 320 }, { x: 318, w: 230, y: 175 }],
+    id: 'ects-arena', name: 'ECTS Arena', tag: 'FLOATING CLASSROOM', width: 1200, floorY: 350,
+    background: 'assets/stages/ects-arena.svg', backgroundMode: 'cover', hidePlatforms: true,
+    sky: ['#46265b', '#754b96', '#211c3a'], top: '#f3a6ff',
+    platforms: [
+      { x: 110, w: 180, y: 205 }, { x: 670, w: 180, y: 205 },
+      { x: 345, w: 270, y: 245 }, { x: 120, w: 220, y: 330 }, { x: 620, w: 220, y: 330 },
+    ],
   },
   {
     id: 'green-hill-loop', name: 'Green Hill Loop', tag: 'ROLLING HEIGHTS', width: 1360, floorY: 397.6774193548387, playableLeft: 145, playableRight: 901.1, spawnSpacing: 500,
@@ -109,15 +114,22 @@ export const STAGE_PREVIEW = {
   topOffset: 250,
   maxTopPercent: 78,
 };
+export const EDITOR_KILL_FLOOR_MAX = 700;
 export const ARENA = {
   width: 960,
   height: 540,
   floorY: 420,
+  blastTop: -100,
   blastY: 560,
   blastLeft: -50,
   blastRight: 1010,
   playableLeft: 90,
   playableRight: 870,
+};
+export const CAMERA = {
+  zoomOutMargin: 240,
+  minimumZoom: 0.65,
+  smoothing: 0.08,
 };
 const stageLayoutCache = new Map();
 export function getStageLayout(stageId) {
@@ -131,7 +143,8 @@ export function getStageLayout(stageId) {
     ...stage,
     width,
     floorY,
-    blastY: floorY + ARENA.blastY - ARENA.floorY,
+    blastTop: ARENA.blastTop * verticalScale,
+    blastY: stage.blastY ?? floorY + ARENA.blastY - ARENA.floorY,
     blastLeft: ARENA.blastLeft * horizontalScale,
     blastRight: width + (ARENA.blastRight - ARENA.width) * horizontalScale,
     playableLeft: (stage.playableLeft ?? ARENA.playableLeft) * horizontalScale,
@@ -156,6 +169,7 @@ export function setStageGround(stageId, ground) {
   const stage = STAGES.find((candidate) => candidate.id === stageId);
   if (!stage) return;
   stage.floorY = ground.floorY;
+  stage.blastY = ground.blastY ?? ground.floorY + ARENA.blastY - ARENA.floorY;
   stage.playableLeft = ground.playableLeft;
   stage.playableRight = ground.playableRight;
   stageLayoutCache.delete(stageId);
@@ -184,8 +198,9 @@ export const PHYSICS = {
 export const COMBAT = {
   baseKnockback: 4,
   attackDamageKnockback: 0.5,
-  damagePercentKnockback: 0.065,
+  damagePercentKnockback: 0.1,
   maxKnockback: 28,
+  maximumDamagePercent: 999,
   horizontalLaunchScale: 0.38,
   maxHorizontalLaunchBonus: 12,
   upwardLaunchScale: 0.22,
@@ -214,25 +229,30 @@ export const COMBAT = {
   activeFrames: 8,
 };
 export const ITEMS = {
-  maxActive: 3,
-  spawnDelay: 10,
+  maxActive: 2,
+  spawnDelay: 480,
   lifetime: 900,
   pickupRadius: 38,
-  gunAmmo: 400,
-  gunCooldown: 0.1,
-  gunDamage: 13,
-  bulletSpeed: 13,
-  bombDamage: 18,
-  bananaDamage: 9,
-  isaacDamage: 18,
-  gunSpawnChance: 0.01,
+  gunAmmo: 10,
+  gunCooldown: 1,
+  gunDamage: 11,
+  bulletSpeed: 12,
+  bombDamage: 15,
+  bananaDamage: 8,
+  isaacDamage: 15,
+  isaacSpeed: 9,
+  isaacProjectileLife: 54,
+  isaacProjectileRadius: 11,
+  springJumpVelocity: 13.5,
+  springForwardBoost: 2,
+  gustSpeedBonus: 1.8,
+  gustBoostDuration: 480,
+  starInvulnerability: 200,
+  heartHealing: 25,
+  shieldRestoration: 35,
   dropForwardOffset: 35,
   dropOwnerLock: 24,
-  isaacCooldown: 24,
-  isaacProjectileOffset: 52,
-  isaacProjectileSpeed: 7,
-  isaacProjectileLife: 30,
-  isaacProjectileRadius: 28,
+  aimedItemCooldown: 24,
 };
 export const SPECIAL = {
   focusGain: 4,
@@ -263,12 +283,12 @@ export const KO_EFFECT = {
   innerRingWidth: 7,
 };
 export const LEDGE = {
-  catchDistance: 40,
-  catchAboveTop: 24,
-  catchBelowTop: 30,
+  catchDistance: 12,
+  catchAboveTop: 8,
+  catchBelowTop: 12,
   hangOffsetX: 12,
   hangOffsetY: 21,
-  regrabDelay: 24,
+  regrabDelay: 42,
   dropSpeed: 4,
   recoverySpeed: -10.5,
   recoveryInwardSpeed: 4.1,

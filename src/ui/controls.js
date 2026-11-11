@@ -16,8 +16,17 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
       ArrowRight: '→',
       ArrowUp: '↑',
       ArrowDown: '↓',
+      MouseLeft: 'MOUSE LEFT',
+      MouseMiddle: 'MOUSE MIDDLE',
+      MouseRight: 'MOUSE RIGHT',
+      MouseBack: 'MOUSE BACK',
+      MouseForward: 'MOUSE FORWARD',
     };
     return labels[key] || key.toUpperCase();
+  }
+
+  function getMouseBinding(button) {
+    return ['MouseLeft', 'MouseMiddle', 'MouseRight', 'MouseBack', 'MouseForward'][button] || null;
   }
 
   function renderControlHints() {
@@ -59,7 +68,7 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
 
   function beginRemap(action) {
     runtime.remappingAction = action;
-    querySelector('#controlFeedback').textContent = `Press a key for ${CONTROL_LABELS[action]}. Press Escape to cancel.`;
+    querySelector('#controlFeedback').textContent = `Press a key or mouse button for ${CONTROL_LABELS[action]}. Press Escape to cancel.`;
     renderControlRows();
     querySelector(`#controlRows [data-remap-action="${action}"]`).focus();
   }
@@ -86,6 +95,19 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
     if (['Control', 'Alt', 'Shift', 'Meta', 'Tab'].includes(event.key)) return;
 
     const key = normalizeKey(event.key);
+    assignBinding(key);
+  }
+
+  function handleRemapMouse(event) {
+    if (querySelector('#controlsModal').hidden || !runtime.remappingAction) return;
+    const key = getMouseBinding(event.button);
+    if (!key) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    assignBinding(key);
+  }
+
+  function assignBinding(key) {
     const collision = Object.entries(runtime.controlBindings)
       .find(([action, boundKey]) => action !== runtime.remappingAction && boundKey === key);
     if (collision) {
@@ -97,6 +119,19 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
     runtime.remappingAction = null;
     querySelector('#controlFeedback').textContent = 'Control updated.';
     renderControlRows();
+  }
+
+  function handleMouseInput(event, isPressed) {
+    if (runtime.state.screen !== 'game' || runtime.isSpectator || !querySelector('#controlsModal').hidden) return;
+    const key = getMouseBinding(event.button);
+    if (!key || !Object.values(runtime.controlBindings).includes(key)) return;
+    event.preventDefault();
+    if (isPressed) {
+      if (runtime.pressedKeys.has(key)) return;
+      runtime.pressedKeys.add(key);
+    } else runtime.pressedKeys.delete(key);
+    const action = Object.entries(runtime.controlBindings).find(([, binding]) => binding === key)?.[0];
+    if (action) setInputState(action, isPressed);
   }
 
   function bindControlSettings() {
@@ -116,6 +151,7 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
       if (event.target === querySelector('#controlsModal')) setControlsOpen(false);
     });
     window.addEventListener('keydown', handleRemapKey, true);
+    window.addEventListener('mousedown', handleRemapMouse, true);
   }
 
   function bindBattleInputs() {
@@ -125,7 +161,7 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
       sendInput();
     });
     window.addEventListener('keydown', (event) => {
-      if (runtime.state.screen !== 'game' || !querySelector('#controlsModal').hidden) return;
+      if (runtime.state.screen !== 'game' || runtime.isSpectator || !querySelector('#controlsModal').hidden) return;
       const action = Object.entries(runtime.controlBindings)
         .find(([, key]) => key === normalizeKey(event.key))?.[0];
       if (!action) return;
@@ -141,9 +177,18 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
       runtime.pressedKeys.delete(event.key);
       setInputState(action, false);
     });
+    window.addEventListener('mousedown', (event) => handleMouseInput(event, true));
+    window.addEventListener('mouseup', (event) => handleMouseInput(event, false));
+    window.addEventListener('blur', () => {
+      for (const key of [...runtime.pressedKeys]) {
+        const action = Object.entries(runtime.controlBindings).find(([, binding]) => binding === key)?.[0];
+        if (action && key.startsWith('Mouse')) setInputState(action, false);
+      }
+    });
     querySelector('#touchControls').querySelectorAll('button[data-control]').forEach((button) => {
       const action = button.dataset.control;
       const press = (event) => {
+        if (runtime.isSpectator) return;
         event.preventDefault();
         button.classList.add('pressed');
         setInputState(action, true);

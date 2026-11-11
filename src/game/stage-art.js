@@ -140,20 +140,6 @@ function drawDynamicAtmosphere(context, stage, time) {
   context.fillStyle = gradient;
   context.fillRect(0, 0, width, ARENA.height);
 
-  context.save();
-  context.globalAlpha = 0.1 + pulse * 0.13;
-  context.strokeStyle = stage.top;
-  context.shadowColor = stage.top;
-  context.shadowBlur = 24;
-  context.lineWidth = 18;
-  for (let ribbonIndex = 0; ribbonIndex < 3; ribbonIndex++) {
-    const ribbonY = 85 + ribbonIndex * 38;
-    context.beginPath();
-    context.moveTo(-40, ribbonY + Math.sin(time * 0.025 + ribbonIndex) * 24);
-    context.bezierCurveTo(width * 0.28, ribbonY - 45, width * 0.62, ribbonY + 48, width + 40, ribbonY - 10);
-    context.stroke();
-  }
-  context.restore();
 }
 
 function drawFloatingIslands(context, width, time) {
@@ -199,21 +185,5 @@ function drawConstellation(context, width, time, color) {
     context.moveTo(starX - width * 0.14, 90 + Math.sin(time * 0.02 + starIndex - 1) * 45);
     context.lineTo(starX, starY);
     context.stroke();
-  }
-}
-
-export function drawSpotlights(context, time, width = ARENA.width) {
-  for (let lightIndex = 0; lightIndex < 3; lightIndex++) {
-    const x = width * (0.19 + lightIndex * 0.31) + Math.sin(time * 0.07 + lightIndex) * 25;
-    const beam = context.createLinearGradient(x, 80, x + 70, 420);
-    beam.addColorStop(0, '#d5f7ff15');
-    beam.addColorStop(1, '#d5f7ff00');
-    context.fillStyle = beam;
-    context.beginPath();
-    context.moveTo(x - 15, 65);
-    context.lineTo(x + 22, 65);
-    context.lineTo(x + 110, 420);
-    context.lineTo(x - 170, 420);
-    context.fill();
   }
 }

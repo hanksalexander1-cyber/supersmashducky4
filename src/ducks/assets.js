@@ -43,6 +43,7 @@ export function createDuckAssets({ sheets, spriteSheet, colors, escapeHtml }) {
       colors: duckColors,
       stats: duckStats,
       derpy: !!rawDuck.derpy,
+      testOnly: isTestDuck(rawDuck, name),
       selectable: hasRequiredStats && hasSpriteColors && sheetsReady,
       missing: [
         ...(!hasRequiredStats ? ['stats'] : []),
@@ -50,6 +51,17 @@ export function createDuckAssets({ sheets, spriteSheet, colors, escapeHtml }) {
         ...(!sheetsReady ? ['sprite sheets'] : []),
       ],
     };
+  }
+
+  function isTestDuck(rawDuck, name) {
+    const hasTestFlag = [rawDuck.test, rawDuck.testOnly, rawDuck.isTest, rawDuck.isTestData, rawDuck.isTestDuck, rawDuck.testDuck]
+      .some((flag) => flag === true || flag === 'true');
+    const hasTestTag = Array.isArray(rawDuck.tags)
+      && rawDuck.tags.some((tag) => String(tag).toLowerCase() === 'test');
+    const hasTestName = /(^|[\s_-])test(?:$|[\s_-]|duck|\d)/i.test(
+      `${name} ${rawDuck._id || ''} ${rawDuck.id || ''}`,
+    );
+    return hasTestFlag || hasTestTag || hasTestName;
   }
 
   function getDuckGraphic(duck) {

@@ -1,6 +1,6 @@
 // Lets stage hosts position hidden collision platforms visually, then saves
 // the edited stage data locally so they can iterate between matches.
-import { ARENA } from '../config.js';
+import { ARENA, EDITOR_KILL_FLOOR_MAX, MATCH_OPTIONS } from '../config.js';
 
 const PLATFORM_STORAGE_KEY = 'smd-stage-platforms';
 const PLATFORM_DEFAULT_WIDTH = 180;
@@ -8,7 +8,7 @@ const PLATFORM_MIN_WIDTH = 48;
 const PLATFORM_SPAWN_HEIGHT = 48;
 const FLOOR_MIN_SPAN = 24;
 
-export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms, setStageGround, querySelector, getSelectedStageId, onChange }) {
+export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms, setStageGround, querySelector, getSelectedStageId, canOpen, onChange }) {
   const editor = querySelector('#platformEditor');
   const canvas = querySelector('#platformEditorCanvas');
   const platformList = querySelector('#platformEditorList');
@@ -55,6 +55,7 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
   }
 
   function openEditor() {
+    if (!canOpen()) return;
     selectedStageId = getSelectedStageId();
     platforms = getStageLayout(selectedStageId).platforms.map((platform) => ({ ...platform }));
     selectedPlatform = -1;
@@ -68,6 +69,10 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
   }
 
   function addPlatform() {
+    if (platforms.length >= MATCH_OPTIONS.maximumSharedPlatforms) {
+      querySelector('#platformEditorStatus').textContent = `Limit reached: stages can have at most ${MATCH_OPTIONS.maximumSharedPlatforms} shared platforms.`;
+      return;
+    }
     const stage = getStageLayout(selectedStageId);
     const width = Math.min(PLATFORM_DEFAULT_WIDTH, stage.width);
     platforms.push({ x: (stage.width - width) / 2, w: width, y: Math.max(0, stage.floorY - PLATFORM_SPAWN_HEIGHT) });
@@ -115,6 +120,11 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
   }
 
   function startPlatformDrag(event) {
+    const killFloor = event.target.closest('[data-kill-floor]');
+    if (killFloor) {
+      startKillFloorDrag(event);
+      return;
+    }
     const floorHandle = event.target.closest('[data-floor-mode]');
     if (floorHandle) {
       startFloorDrag(event, floorHandle.dataset.floorMode);
@@ -132,6 +142,18 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
     };
     canvas.setPointerCapture(event.pointerId);
     renderEditor();
+    event.preventDefault();
+  }
+
+  function startKillFloorDrag(event) {
+    const stage = getStageLayout(selectedStageId);
+    dragState = {
+      pointerId: event.pointerId,
+      mode: 'kill-floor',
+      clientY: event.clientY,
+      blastY: stage.blastY,
+    };
+    canvas.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
 
@@ -157,6 +179,10 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
     const scaleX = stage.width / bounds.width;
     const scaleY = ARENA.height / bounds.height;
     const platform = platforms[selectedPlatform];
+    if (dragState.mode === 'kill-floor') {
+      moveKillFloor(event, stage, scaleY);
+      return;
+    }
     if (dragState.mode.startsWith('floor-')) {
       moveFloor(event, stage, scaleX, scaleY);
       return;
@@ -174,6 +200,17 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
     applyPlatforms();
   }
 
+  function moveKillFloor(event, stage, scaleY) {
+    const blastY = clamp(dragState.blastY + (event.clientY - dragState.clientY) * scaleY, 0, EDITOR_KILL_FLOOR_MAX);
+    setStageGround(selectedStageId, {
+      floorY: stage.floorY,
+      blastY,
+      playableLeft: stage.playableLeft * ARENA.width / stage.width,
+      playableRight: stage.playableRight * ARENA.width / stage.width,
+    });
+    applyPlatforms();
+  }
+
   function moveFloor(event, stage, scaleX, scaleY) {
     const ground = { floorY: dragState.floorY, left: dragState.left, right: dragState.right };
     const deltaX = (event.clientX - dragState.clientX) * scaleX;
@@ -183,6 +220,7 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
     if (dragState.mode === 'floor-right') ground.right = clamp(dragState.right + deltaX, dragState.left + FLOOR_MIN_SPAN, stage.width);
     setStageGround(selectedStageId, {
       floorY: ground.floorY,
+      blastY: stage.blastY,
       playableLeft: ground.left * ARENA.width / stage.width,
       playableRight: ground.right * ARENA.width / stage.width,
     });
@@ -225,13 +263,19 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
     floor.style.width = `${(stage.playableRight - stage.playableLeft) / stage.width * 100}%`;
     floor.innerHTML = '<span data-floor-mode="left" aria-label="Adjust floor left edge"></span><span data-floor-mode="right" aria-label="Adjust floor right edge"></span>';
     canvas.append(floor);
+    const killFloor = document.createElement('div');
+    killFloor.className = 'platform-editor-kill-floor';
+    killFloor.dataset.killFloor = 'true';
+    killFloor.style.top = `${stage.blastY / ARENA.height * 100}%`;
+    killFloor.innerHTML = '<span>KO FLOOR · DRAG</span>';
+    canvas.append(killFloor);
     platformList.innerHTML = platforms.map((platform, index) => (
       `<div class="platform-editor-row"><button class="platform-editor-select ${selectedPlatform === index ? 'selected' : ''}" type="button" data-select-platform="${index}">Platform ${index + 1} <small>X ${Math.round(platform.x)} · Y ${Math.round(platform.y)}</small></button><label class="platform-editor-solid"><input type="checkbox" data-solid-platform="${index}" ${platform.solid ? 'checked' : ''}>Solid</label><button class="platform-editor-remove" type="button" data-remove-platform="${index}" aria-label="Delete platform ${index + 1}">Remove</button></div>`
     )).join('') || '<p class="platform-editor-empty">No platforms on this stage.</p>';
     querySelector('#deletePlatformButton').disabled = selectedPlatform < 0;
     querySelector('#clearPlatformsButton').disabled = platforms.length === 0;
     querySelector('#platformEditorName').textContent = stage.name;
-    querySelector('#platformEditorStatus').textContent = `${platforms.length} platforms · drag to move · resize at right · Solid blocks drop-through`;
+    querySelector('#platformEditorStatus').textContent = `${platforms.length} platforms · drag red line to move KO floor · Solid blocks drop-through`;
   }
 
   function savePlatforms() {
@@ -239,7 +283,7 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
       const savedPlatforms = JSON.parse(localStorage.getItem(PLATFORM_STORAGE_KEY) || '{}');
       savedPlatforms[selectedStageId] = { platforms: toBaseCoordinates(), ground: toBaseGround() };
       localStorage.setItem(PLATFORM_STORAGE_KEY, JSON.stringify(savedPlatforms));
-      querySelector('#platformEditorStatus').textContent = 'Saved on this device. Guests receive the layout when the match starts.';
+      querySelector('#platformEditorStatus').textContent = 'Saved on this device and shared with the room.';
     } catch {
       querySelector('#platformEditorStatus').textContent = 'Could not save in this browser.';
     }
@@ -247,7 +291,7 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
 
   async function copyPlatformCode() {
     const ground = toBaseGround();
-    const code = `floorY: ${ground.floorY}, playableLeft: ${ground.playableLeft}, playableRight: ${ground.playableRight},\nplatforms: ${JSON.stringify(toBaseCoordinates())},`;
+    const code = `floorY: ${ground.floorY}, blastY: ${ground.blastY}, playableLeft: ${ground.playableLeft}, playableRight: ${ground.playableRight},\nplatforms: ${JSON.stringify(toBaseCoordinates())},`;
     const output = querySelector('#platformCodeOutput');
     try {
       await navigator.clipboard.writeText(code);
@@ -276,6 +320,7 @@ export function createPlatformEditor({ stages, getStageLayout, setStagePlatforms
     const stage = getStageLayout(selectedStageId);
     return {
       floorY: stage.floorY,
+      blastY: stage.blastY,
       playableLeft: round(stage.playableLeft * ARENA.width / stage.width),
       playableRight: round(stage.playableRight * ARENA.width / stage.width),
     };

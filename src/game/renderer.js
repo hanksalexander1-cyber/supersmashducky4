@@ -1,28 +1,32 @@
 // Canvas presentation layer for the live match. It reads the current runtime
 // state and draws stage art, duck sprites and poses, combat effects, items,
 // and overlays; game rules and networking are handled by separate modules.
-import { ARENA, KO_EFFECT, SPAWN_PLATFORM, getStageLayout } from '../config.js';
-import { drawSpotlights, drawStageBackground } from './stage-art.js';
+import { ARENA, CAMERA, KO_EFFECT, SPAWN_PLATFORM, getStageLayout } from '../config.js';
+import { drawStageBackground } from './stage-art.js';
 
 export function createBattleRenderer({ runtime, querySelector, backgroundImages, spriteCache }) {
   const renderImages = new Map();
   let cameraLeft = 0;
+  let cameraZoom = 1;
 
   function drawBattle() {
     const canvas = querySelector('#arenaCanvas');
     const context = canvas.getContext('2d');
     const time = runtime.game.elapsedTime || performance.now() / 1000;
     const stage = runtime.game.stageLayout || getStageLayout(runtime.game.stageId);
-    cameraLeft = getCameraLeft(stage, runtime.game.entities);
+    const camera = getCameraView(stage, runtime.game.entities);
+    cameraLeft = camera.left;
+    cameraZoom = camera.zoom;
 
     context.clearRect(0, 0, ARENA.width, ARENA.height);
     context.save();
-    context.translate(-cameraLeft, 0);
+    context.translate(ARENA.width / 2, ARENA.height / 2);
+    context.scale(cameraZoom, cameraZoom);
+    context.translate(-cameraLeft - ARENA.width / (2 * cameraZoom), -ARENA.height / 2);
     applyScreenShake(context, runtime.game.shake);
 
-    // Keep scene layers ordered so the spotlights sit over the stage and under the fighters.
     drawStageBackground(context, stage, backgroundImages, time);
-    drawSpotlights(context, time, stage.width);
+    drawStageHazard(context, runtime.game.hazard, stage, time);
     drawStagePlatforms(context, stage);
     drawSpawnPlatforms(context, runtime.game.entities);
     drawSmashBall(context, runtime.game.smashBall);
@@ -36,13 +40,47 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     drawSideKOEffects(context, runtime.game.koEffects);
   }
 
-  function getCameraLeft(stage, fighters) {
+  function drawStageHazard(context, hazard, stage, time) {
+    if (!hazard || hazard.timer <= 0) return;
+    context.save();
+    context.globalAlpha = Math.min(0.3, hazard.timer / 180);
+    context.strokeStyle = hazard.type === 'updraft' ? '#b7f4ff' : '#ffe19a';
+    context.lineWidth = 3;
+    for (let streak = 0; streak < 12; streak += 1) {
+      const progress = (time * 90 + streak * 83) % stage.width;
+      const x = hazard.direction < 0 ? stage.width - progress : progress;
+      const y = 55 + (streak * 37) % Math.max(100, stage.floorY - 70);
+      context.beginPath();
+      if (hazard.type === 'updraft') {
+        context.moveTo(x, y + 22);
+        context.lineTo(x, y - 22);
+      } else {
+        context.moveTo(x, y);
+        context.lineTo(x - hazard.direction * 38, y);
+      }
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  function getCameraView(stage, fighters) {
     const activeFighters = fighters.filter((fighter) => !fighter.eliminated && fighter.respawn <= 0);
-    if (stage.width <= ARENA.width || activeFighters.length === 0) return 0;
-    const center = activeFighters.reduce((sum, fighter) => sum + fighter.x, 0) / activeFighters.length;
-    const target = Math.max(0, Math.min(stage.width - ARENA.width, center - ARENA.width / 2));
-    cameraLeft += (target - cameraLeft) * 0.08;
-    return cameraLeft;
+    const fighterPositions = activeFighters.map((fighter) => fighter.x);
+    const fighterSpan = fighterPositions.length
+      ? Math.max(...fighterPositions) - Math.min(...fighterPositions) + CAMERA.zoomOutMargin
+      : ARENA.width;
+    const minimumZoom = Math.min(1, Math.max(CAMERA.minimumZoom, ARENA.width / stage.width));
+    const targetZoom = Math.max(minimumZoom, Math.min(1, ARENA.width / fighterSpan));
+    const viewportWidth = ARENA.width / targetZoom;
+    const center = fighterPositions.length
+      ? (Math.min(...fighterPositions) + Math.max(...fighterPositions)) / 2
+      : viewportWidth / 2;
+    const targetLeft = Math.max(0, Math.min(stage.width - viewportWidth, center - viewportWidth / 2));
+
+    cameraZoom += (targetZoom - cameraZoom) * CAMERA.smoothing;
+    cameraLeft += (targetLeft - cameraLeft) * CAMERA.smoothing;
+    cameraLeft = Math.max(0, Math.min(stage.width - ARENA.width / cameraZoom, cameraLeft));
+    return { left: cameraLeft, zoom: cameraZoom };
   }
 
   function drawSideKOEffects(context, effects = []) {
@@ -105,18 +143,16 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     const visiblePlatforms = [...stage.platforms, { x: stage.playableLeft, w: stage.playableRight - stage.playableLeft, y: stage.floorY }];
     for (const platform of visiblePlatforms) {
       context.save();
-      context.shadowColor = platform.solid ? '#ffe584' : stage.top;
+      context.shadowColor = platform.solid ? '#73d8e8' : '#243b4a';
       context.shadowBlur = 13;
       const fill = context.createLinearGradient(0, platform.y, 0, platform.y + 17);
-      fill.addColorStop(0, platform.solid ? '#806b36' : '#526a79');
-      fill.addColorStop(1, platform.solid ? '#332b18' : '#172633');
+      fill.addColorStop(0, platform.solid ? '#27616b' : '#526a79');
+      fill.addColorStop(1, platform.solid ? '#17353b' : '#172633');
       context.fillStyle = fill;
       context.beginPath();
       context.roundRect(platform.x, platform.y, platform.w, 17, 5);
       context.fill();
       context.shadowBlur = 0;
-      context.fillStyle = platform.solid ? '#ffe584' : stage.top;
-      context.fillRect(platform.x + 5, platform.y, platform.w - 10, 3);
       context.restore();
     }
   }
@@ -264,6 +300,8 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
       heart: drawHeartIcon,
       shield: drawShieldIcon,
       isaac: drawIsaacIcon,
+      spring: drawSpringIcon,
+      gust: drawGustIcon,
     };
     (iconDrawers[type] || drawStarIcon)(context);
     context.restore();
@@ -355,6 +393,30 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.arc(-4, 1, 1.4, 0, Math.PI * 2);
     context.arc(4, 1, 1.4, 0, Math.PI * 2);
     context.fill();
+  }
+
+  function drawSpringIcon(context) {
+    context.strokeStyle = '#54c979';
+    context.lineWidth = 5;
+    context.beginPath();
+    context.moveTo(-12, 10);
+    context.lineTo(12, 10);
+    context.lineTo(-10, 2);
+    context.lineTo(10, -5);
+    context.lineTo(-8, -12);
+    context.lineTo(8, -12);
+    context.stroke();
+  }
+
+  function drawGustIcon(context) {
+    context.strokeStyle = '#8de8ff';
+    context.lineWidth = 4;
+    for (const height of [-7, 0, 7]) {
+      context.beginPath();
+      context.moveTo(-14, height);
+      context.bezierCurveTo(-3, height - 4, 3, height + 4, 14, height);
+      context.stroke();
+    }
   }
 
   function drawStarIcon(context) {

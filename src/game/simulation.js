@@ -1,10 +1,10 @@
 // Authoritative game rules and frame-by-frame state updates: fighter movement,
 // attacks, damage and knockback, platforms and ledges, Smash Ball effects,
 // respawns, and match outcomes. It updates runtime data without drawing UI.
-import { BATTLE_RULES, COLORS, COMBAT, ITEMS, KO_EFFECT, LEDGE, PHYSICS, PLATFORM_DROP, SPECIAL, SPAWN_PLATFORM, getStageLayout } from '../config.js';
+import { BATTLE_RULES, COLORS, COMBAT, ITEMS, KO_EFFECT, LEDGE, MATCH_OPTIONS, PHYSICS, PLATFORM_DROP, SPECIAL, SPAWN_PLATFORM, getStageLayout } from '../config.js';
 
 export function createGameSimulation(runtime, emptyInput) {
-function createFighter(player, index, playerCount, stageLayout) {
+function createFighter(player, index, playerCount, stageLayout, options) {
   const duck = runtime.ducks.find((candidate) => candidate.id === player.duckId);
   const spawnSpan = Math.min(stageLayout.width * 0.6, stageLayout.spawnSpacing || SPAWN_PLATFORM.spawnSpacing);
   const spawnX = stageLayout.width / 2 - spawnSpan / 2 + index * spawnSpan / Math.max(1, playerCount - 1);
@@ -20,7 +20,8 @@ function createFighter(player, index, playerCount, stageLayout) {
     vx: 0,
     vy: 0,
     damage: 0,
-    stocks: BATTLE_RULES.startingStocks,
+    stocks: options.startingStocks,
+    maxStocks: options.startingStocks,
     focus: 0,
     guard: 100,
     facing: index % 2 ? -1 : 1,
@@ -47,6 +48,7 @@ function createFighter(player, index, playerCount, stageLayout) {
     attackLungeApplied: false,
     weapon: null,
     weaponCooldown: 0,
+    gustBoostTimer: 0,
     ledgeGrabbed: false,
     ledgeSide: 0,
     ledgeRegrabCooldown: 0,
@@ -64,14 +66,50 @@ function createFighter(player, index, playerCount, stageLayout) {
     hitstun: 0,
     flash: 0,
     stats: {
-      strength: Number(duck?.stats.strength) || 0,
-      health: Number(duck?.stats.health) || 0,
-      focus: Number(duck?.stats.focus) || 0,
+      strength: normalizeFighterStat(duck?.stats.strength),
+      health: normalizeFighterStat(duck?.stats.health),
+      focus: normalizeFighterStat(duck?.stats.focus),
     },
+    moveVariant: getMoveVariant(duck?.id || player.id),
+    trainingDummy: !!player.trainingDummy,
+    damageDealt: 0,
+    damageTaken: 0,
+    kos: 0,
+    falls: 0,
   };
 }
-function createMatch(activePlayers, stageId, rulesMode = 'stock') {
+function getMoveVariant(duckId) {
+  let hash = 0;
+  for (const character of String(duckId)) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return hash % 3;
+}
+
+function normalizeFighterStat(value) {
+  const statValue = Number(value);
+  return Number.isFinite(statValue) ? Math.max(0, Math.min(100, statValue)) : 0;
+}
+
+function addDamage(fighter, amount) {
+  const currentDamage = Number.isFinite(fighter.damage)
+    ? Math.max(0, Math.min(COMBAT.maximumDamagePercent, fighter.damage))
+    : 0;
+  const safeAmount = Number.isFinite(amount) ? Math.max(0, amount) : 0;
+  fighter.damage = Math.min(COMBAT.maximumDamagePercent, currentDamage + safeAmount);
+  return fighter.damage - currentDamage;
+}
+
+function addFiniteTotal(currentValue, amount) {
+  const currentTotal = Number.isFinite(currentValue) ? Math.max(0, currentValue) : 0;
+  const safeAmount = Number.isFinite(amount) ? Math.max(0, amount) : 0;
+  return Math.min(Number.MAX_SAFE_INTEGER, currentTotal + safeAmount);
+}
+
+function createMatch(activePlayers, stageId, rulesMode = 'stock', options = {}) {
   const stageLayout = getStageLayout(stageId);
+  const startingStocks = MATCH_OPTIONS.stockCounts.includes(options.startingStocks)
+    ? options.startingStocks
+    : BATTLE_RULES.startingStocks;
+  const itemFrequency = options.itemFrequency || 'normal';
   const inputs = Object.fromEntries(activePlayers.map((player) => [player.id, emptyInput()]));
   return {
     active: true,
@@ -79,11 +117,19 @@ function createMatch(activePlayers, stageId, rulesMode = 'stock') {
     rulesMode,
     timeRemaining: rulesMode === 'timed' ? BATTLE_RULES.timedDuration : null,
     stageLayout,
-    entities: activePlayers.map((player, index) => createFighter(player, index, activePlayers.length, stageLayout)),
+    entities: activePlayers.map((player, index) => createFighter(player, index, activePlayers.length, stageLayout, { startingStocks })),
+    training: !!options.training,
+    matchOptions: {
+      startingStocks,
+      itemFrequency,
+      itemSpawnDelay: MATCH_OPTIONS.itemDelays[itemFrequency] ?? ITEMS.spawnDelay,
+    },
+    hazardTimer: MATCH_OPTIONS.hazardCycle,
+    hazard: null,
     inputs,
     projectiles: [],
     items: [],
-    itemSpawnIn: ITEMS.spawnDelay,
+    itemSpawnIn: MATCH_OPTIONS.itemDelays[itemFrequency] ?? ITEMS.spawnDelay,
     elapsedTime: 0,
     koEffects: [],
     smashBall: null,
@@ -113,21 +159,31 @@ function spawnParticles(x,y,color,count=9) {
     }
 }
   
-function applyHit(attacker,target,power,special=false,vertical='') {
+function applyHit(attacker,target,power,special=false,vertical='',sourceY=attacker.y) {
+  if (target.ledgeGrabbed && Number.isFinite(sourceY) && sourceY < target.y) return;
   const resistance = 1 - Math.min(0.42, target.stats.health * 0.03);
   if (target.guard > 0 && runtime.game.inputs[target.id]?.shield) {
     applyGuardHit(attacker, target, special);
     return;
   }
 
-  const damage = power + attacker.stats.strength * (special ? 0.65 : 0.38);
-  target.damage += damage;
+  const safePower = Number.isFinite(power) ? Math.max(0, power) : 0;
+  const strength = normalizeFighterStat(attacker.stats.strength);
+  const damage = safePower + strength * (special ? 0.65 : 0.38);
+  addDamage(target, damage);
+  target.damageTaken = addFiniteTotal(target.damageTaken, damage);
+  attacker.damageDealt = addFiniteTotal(attacker.damageDealt, damage);
+  target.lastAttackerId = attacker.id;
+  target.lastHitAt = runtime.game.elapsedTime;
+  runtime.pendingGameEvents.push({ type: 'hit' });
   if (runtime.game.rulesMode === 'stamina' && target.damage >= BATTLE_RULES.staminaHealth) {
     target.damage = BATTLE_RULES.staminaHealth;
     target.stocks = 0;
     target.eliminated = true;
     target.respawn = 0;
     target.weapon = null;
+    attacker.kos += 1;
+    runtime.pendingGameEvents.push({ type: 'ko', fighterId: target.id, playerName: target.name });
   }
   const knockback = Math.min(COMBAT.maxKnockback, COMBAT.baseKnockback
     + damage * COMBAT.attackDamageKnockback
@@ -142,7 +198,8 @@ function applyHit(attacker,target,power,special=false,vertical='') {
   target.hitstun = 14 + Math.min(30, target.damage * 0.22);
   target.invuln = 11;
   target.flash = 14;
-  attacker.focus = Math.min(100, attacker.focus + SPECIAL.focusGain + attacker.stats.focus * SPECIAL.focusStatGain);
+  attacker.focus = Math.min(100, (Number.isFinite(attacker.focus) ? attacker.focus : 0)
+    + SPECIAL.focusGain + normalizeFighterStat(attacker.stats.focus) * SPECIAL.focusStatGain);
   if (target.ledgeGrabbed) releaseFighterFromLedge(target);
   const impactIntensity = Math.min(1, damage / 20);
   spawnParticles(target.x, target.y, special ? '#ffcf5d' : '#fff3c4', Math.round(16 + impactIntensity * 18));
@@ -263,10 +320,17 @@ function updateCinematic(deltaTime) {
       const distanceAlongBeam = relativeX * cutscene.facing;
       const distanceFromBeam = Math.abs(relativeY);
       if (distanceAlongBeam < 0 || distanceAlongBeam > beamLength + 35 || distanceFromBeam > 82) continue;
+      if (target.ledgeGrabbed && originY < target.y) continue;
 
-      const resistance = 1 - Math.min(0.35, target.stats.health * 0.02);
-      target.damage += 52 + Math.min(24, owner.stats.strength * 0.8);
-      target.vx = cutscene.facing * (17 + Math.min(7, owner.stats.strength * 0.25)) * resistance;
+      const resistance = 1 - Math.min(0.35, normalizeFighterStat(target.stats.health) * 0.02);
+      const finalSmashDamage = 52 + Math.min(24, normalizeFighterStat(owner.stats.strength) * 0.8);
+      addDamage(target, finalSmashDamage);
+      target.damageTaken = addFiniteTotal(target.damageTaken, finalSmashDamage);
+      owner.damageDealt = addFiniteTotal(owner.damageDealt, finalSmashDamage);
+      target.lastAttackerId = owner.id;
+      target.lastHitAt = runtime.game.elapsedTime;
+      const ownerStrength = normalizeFighterStat(owner.stats.strength);
+      target.vx = cutscene.facing * (17 + Math.min(7, ownerStrength * 0.25)) * resistance;
       target.vy = -3;
       target.hitstun = 100;
       target.invuln = 8;
@@ -312,14 +376,13 @@ function updateKoEffects(deltaTime) {
 function updateItems(deltaTime) {
   const game = runtime.game;
   const stage = game.stageLayout;
+  if (game.matchOptions?.itemFrequency === 'off' || !Number.isFinite(game.matchOptions?.itemSpawnDelay)) return;
   game.itemSpawnIn -= deltaTime;
   if (game.itemSpawnIn <= 0 && game.items.length < ITEMS.maxActive) {
-    const itemTypes = ['bomb', 'banana', 'star', 'heart', 'shield', 'isaac'];
-    const type = Math.random() < ITEMS.gunSpawnChance
-      ? 'blaster'
-      : itemTypes[Math.floor(Math.random() * itemTypes.length)];
+    const itemTypes = ['blaster', 'bomb', 'banana', 'star', 'heart', 'shield', 'isaac', 'spring', 'gust'];
+    const type = itemTypes[Math.floor(Math.random() * itemTypes.length)];
     game.items.push({ type, x: stage.width * (0.12 + Math.random() * 0.76), y: 105, vy: 0, life: ITEMS.lifetime });
-    game.itemSpawnIn = ITEMS.spawnDelay;
+    game.itemSpawnIn = game.matchOptions?.itemSpawnDelay ?? ITEMS.spawnDelay;
   }
   for (const item of [...game.items]) {
     item.ownerLock = Math.max(0, (item.ownerLock || 0) - deltaTime);
@@ -337,11 +400,22 @@ function updateItems(deltaTime) {
 function collectItem(fighter, item) {
   const itemIndex = runtime.game.items.indexOf(item);
   if (item.type === 'blaster') fighter.weapon = { type: 'blaster', ammo: item.ammo || ITEMS.gunAmmo };
-  if (item.type === 'star') fighter.invuln = Math.max(fighter.invuln, 240);
-  if (item.type === 'bomb' || item.type === 'banana' || item.type === 'isaac') fighter.weapon = { type: item.type, ammo: item.ammo || 1 };
-  if (item.type === 'heart') fighter.damage = Math.max(0, fighter.damage - 35);
-  if (item.type === 'shield') fighter.guard = Math.min(100, fighter.guard + 45);
-  const colors = { star: '#ffe65a', heart: '#ff6b87', shield: '#83dcff', banana: '#ffe45b', isaac: '#ef7946' };
+  if (item.type === 'star') fighter.invuln = Math.max(fighter.invuln, ITEMS.starInvulnerability);
+  if (['bomb', 'banana', 'isaac', 'spring'].includes(item.type)) {
+    fighter.weapon = { type: item.type, ammo: item.ammo || 1 };
+  }
+  if (item.type === 'gust') fighter.gustBoostTimer = ITEMS.gustBoostDuration;
+  if (item.type === 'heart') fighter.damage = Math.max(0, (Number.isFinite(fighter.damage) ? fighter.damage : 0) - ITEMS.heartHealing);
+  if (item.type === 'shield') fighter.guard = Math.min(100, fighter.guard + ITEMS.shieldRestoration);
+  const colors = {
+    star: '#ffe65a',
+    heart: '#ff6b87',
+    shield: '#83dcff',
+    banana: '#ffe45b',
+    isaac: '#ef7946',
+    spring: '#6be18b',
+    gust: '#8de8ff',
+  };
   spawnParticles(item.x, item.y, colors[item.type] || '#ff9a53', 15);
   if (itemIndex >= 0) runtime.game.items.splice(itemIndex, 1);
 }
@@ -363,18 +437,23 @@ function dropHeldItem(fighter) {
   spawnParticles(fighter.x + fighter.facing * ITEMS.dropForwardOffset, fighter.y, '#ffe59c', 8);
 }
 
-function fireHeldItem(fighter) {
+function fireHeldItem(fighter, input) {
   const weapon = fighter.weapon;
-  if (weapon.type === 'isaac') {
-    summonIsaac(fighter);
-    weapon.ammo -= 1;
-    if (weapon.ammo <= 0) fighter.weapon = null;
-    fighter.weaponCooldown = ITEMS.isaacCooldown;
+  if (weapon.type === 'spring') {
+    useSpring(fighter);
+    consumeHeldItem(fighter, ITEMS.aimedItemCooldown);
     return;
   }
+  const isIsaac = weapon.type === 'isaac';
   const isBlaster = weapon.type === 'blaster';
   const isBomb = weapon.type === 'bomb';
   const kind = isBlaster ? 'bullet' : weapon.type;
+  if (isIsaac) {
+    fireAimedItem(fighter, input, weapon, ITEMS.isaacSpeed,
+      ITEMS.isaacDamage, ITEMS.isaacProjectileRadius,
+      ITEMS.isaacProjectileLife, '#ff7045');
+    return;
+  }
   const projectile = {
     ownerId: fighter.id,
     kind,
@@ -394,24 +473,39 @@ function fireHeldItem(fighter) {
   if (weapon.ammo <= 0) fighter.weapon = null;
 }
 
-function summonIsaac(fighter) {
-  const targets = runtime.game.entities.filter((target) => target.id !== fighter.id
-    && !target.eliminated && target.respawn <= 0);
-  for (const target of targets) {
-    runtime.game.projectiles.push({
-      ownerId: fighter.id,
-      kind: 'isaac',
-      x: target.x,
-      y: target.y + ITEMS.isaacProjectileOffset,
-      vx: 0,
-      vy: -ITEMS.isaacProjectileSpeed,
-      life: ITEMS.isaacProjectileLife,
-      radius: ITEMS.isaacProjectileRadius,
-      color: '#ff7045',
-      power: ITEMS.isaacDamage,
-    });
-    spawnParticles(target.x, target.y + ITEMS.isaacProjectileOffset - 10, '#f9b84b', 12);
-  }
+function fireAimedItem(fighter, input, weapon, speed, power, radius, life, color) {
+  const verticalAim = Number(input.down) - Number(input.up);
+  const directionLength = Math.hypot(1, verticalAim);
+  const projectile = {
+    ownerId: fighter.id,
+    kind: weapon.type,
+    x: fighter.x + fighter.facing * 34,
+    y: fighter.y - 10,
+    vx: fighter.facing * speed / directionLength,
+    vy: verticalAim * speed / directionLength,
+    life,
+    radius,
+    color,
+    power,
+  };
+  runtime.game.projectiles.push(projectile);
+  spawnParticles(projectile.x, projectile.y, color, 8);
+  consumeHeldItem(fighter, ITEMS.aimedItemCooldown);
+}
+
+function useSpring(fighter) {
+  fighter.vy = -ITEMS.springJumpVelocity;
+  fighter.vx += fighter.facing * ITEMS.springForwardBoost;
+  fighter.grounded = false;
+  fighter.groundedPlatformY = null;
+  fighter.jumpCount = Math.max(1, fighter.jumpCount);
+  spawnParticles(fighter.x, fighter.y + 24, '#6be18b', 16);
+}
+
+function consumeHeldItem(fighter, cooldown) {
+  fighter.weapon.ammo -= 1;
+  if (fighter.weapon.ammo <= 0) fighter.weapon = null;
+  fighter.weaponCooldown = cooldown;
 }
 
 function updateSmashBall(deltaTime) {
@@ -445,8 +539,11 @@ function updateGameSimulation(deltaTime) {
     updateCinematic(deltaTime);
     return;
   }
-  updateSmashBall(deltaTime);
-  updateItems(deltaTime);
+  if (!runtime.game.training) {
+    updateStageHazard(deltaTime);
+    updateSmashBall(deltaTime);
+    updateItems(deltaTime);
+  }
   for (const fighter of runtime.game.entities) updateFighter(fighter, deltaTime);
   updateProjectiles(deltaTime);
   updateParticles(deltaTime);
@@ -456,6 +553,12 @@ function updateGameSimulation(deltaTime) {
 }
 function updateFighter(fighter, deltaTime) {
   if (fighter.eliminated) return;
+  if (fighter.trainingDummy) {
+    updateFighterTimers(fighter, deltaTime);
+    fighter.vx *= 0.9;
+    advanceFighterPhysics(fighter, deltaTime);
+    return;
+  }
   if (fighter.respawn > 0) {
     updateFighterRespawn(fighter, deltaTime);
     return;
@@ -521,6 +624,8 @@ function updateFighterRespawn(fighter, deltaTime) {
   fighter.ledgeGrabbed = false;
   fighter.ledgeSide = 0;
   fighter.damage = 0;
+  fighter.focus = 0;
+  fighter.guard = 100;
   fighter.jumpCount = 0;
   fighter.attackType = '';
   fighter.attackTimer = 0;
@@ -536,6 +641,7 @@ function updateFighterTimers(fighter, deltaTime) {
   for (const timer of ['invuln', 'attackCooldown', 'specialCooldown', 'hitstun', 'flash', 'comboWindow', 'ledgeRegrabCooldown', 'weaponCooldown', 'dropThroughTimer']) {
     if (fighter[timer] > 0) fighter[timer] -= deltaTime;
   }
+  fighter.gustBoostTimer = Math.max(0, fighter.gustBoostTimer - deltaTime);
 }
 function updateFighterGuard(fighter, input, deltaTime) {
   fighter.guarding = !!input.shield;
@@ -561,7 +667,10 @@ function updateFighterMovementInput(fighter, input, deltaTime) {
     return;
   }
   const direction = Number(input.right) - Number(input.left);
-  const speed = PHYSICS.baseRunSpeed + Math.min(PHYSICS.focusRunBonus, fighter.stats.focus / 30);
+  const gustSpeedBonus = fighter.gustBoostTimer > 0 ? ITEMS.gustSpeedBonus : 0;
+  const speed = PHYSICS.baseRunSpeed
+    + Math.min(PHYSICS.focusRunBonus, fighter.stats.focus / 30)
+    + gustSpeedBonus;
   const acceleration = fighter.grounded ? PHYSICS.groundAcceleration : PHYSICS.airAcceleration;
   if (direction !== 0) {
     fighter.vx += (direction * speed - fighter.vx) * acceleration * deltaTime;
@@ -620,6 +729,7 @@ function startAttack(fighter, attackType, duration, warmup, cooldown) {
   fighter.attackHitSmashBall = false;
   fighter.attackLungeApplied = false;
   fighter.attackCooldown = cooldown;
+  runtime.pendingGameEvents.push({ type: 'attack' });
   const lunge = attackType.startsWith('smash') ? COMBAT.smashLunge : COMBAT.jabLunge;
   fighter.vx += fighter.facing * lunge;
 }
@@ -629,7 +739,7 @@ function handleFighterAttacks(fighter, input, pressed, deltaTime) {
     return;
   }
   if (fighter.hitstun <= 0 && pressed.jabPressed && fighter.weapon?.ammo > 0 && fighter.weaponCooldown <= 0) {
-    fireHeldItem(fighter);
+    fireHeldItem(fighter, input);
     return;
   }
   if (fighter.hitstun <= 0 && fighter.attackCooldown <= 0 && pressed.smashPressed) {
@@ -690,6 +800,7 @@ function useFighterSpecial(fighter, specialPressed, input) {
   fighter.attackType = 'special';
   fighter.attackTimer = 18;
   fighter.attackDuration = 18;
+  runtime.pendingGameEvents.push({ type: 'attack' });
   const duck = runtime.ducks.find((candidate) => candidate.id === fighter.duckId);
   const color = COLORS[duck?.colors.head] || '#ffd05c';
   fireDirectionalSpecial(fighter, input, tier, color);
@@ -709,7 +820,25 @@ function fireDirectionalSpecial(fighter, input, tier, color) {
     fighter.vy = Math.min(fighter.vy, -SPECIAL.upwardBoost - tier);
     runtime.game.projectiles.push({ ownerId: fighter.id, kind: 'focus-bolt', x: fighter.x, y: fighter.y - 42, vx: fighter.facing * 2, vy: -SPECIAL.upwardProjectileSpeed - tier, life: SPECIAL.upwardProjectileLife, radius, color, power });
   } else {
-    runtime.game.projectiles.push({ ownerId: fighter.id, kind: 'focus-bolt', x: fighter.x + fighter.facing * 46, y: fighter.y - 12, vx: fighter.facing * (8.5 + tier), vy: 0, life: 78, radius, color, power });
+    const variants = [
+      [{ y: 0, speed: 8.5, powerScale: 1 }],
+      [{ y: -12, speed: 8, powerScale: 0.5 }, { y: 12, speed: 8, powerScale: 0.5 }],
+      [{ y: 0, speed: 7.5, powerScale: 1.1 }],
+    ];
+    for (const shot of variants[fighter.moveVariant]) {
+      runtime.game.projectiles.push({
+        ownerId: fighter.id,
+        kind: 'focus-bolt',
+        x: fighter.x + fighter.facing * 46,
+        y: fighter.y - 12 + shot.y,
+        vx: fighter.facing * (shot.speed + tier),
+        vy: shot.y * 0.025,
+        life: 78,
+        radius,
+        color,
+        power: power * shot.powerScale,
+      });
+    }
   }
   spawnParticles(fighter.x + fighter.facing * 44, fighter.y - 12, color, 12 + tier * 5);
 }
@@ -863,10 +992,18 @@ function updateFighterAnimationTimers(fighter, deltaTime) {
 }
 function handleFighterRingOut(fighter) {
   const stage = runtime.game.stageLayout;
-  if (fighter.y <= stage.blastY && fighter.x >= stage.blastLeft && fighter.x <= stage.blastRight) return;
+  if (fighter.y >= stage.blastTop && fighter.y <= stage.blastY
+      && fighter.x >= stage.blastLeft && fighter.x <= stage.blastRight) return;
+  if (fighter.trainingDummy) {
+    resetTrainingDummy(fighter, stage);
+    return;
+  }
   if (fighter.x < stage.blastLeft || fighter.x > stage.blastRight) {
     runtime.game.koEffects.push({ side: fighter.x < 0 ? 'left' : 'right', y: Math.max(48, Math.min(stage.floorY - 38, fighter.y)), life: KO_EFFECT.lifetime, max: KO_EFFECT.lifetime });
   }
+  fighter.falls += 1;
+  const attacker = runtime.game.entities.find((candidate) => candidate.id === fighter.lastAttackerId);
+  if (attacker && runtime.game.elapsedTime - fighter.lastHitAt < 180) attacker.kos += 1;
   if (runtime.game.rulesMode === 'stamina') {
     fighter.damage = BATTLE_RULES.staminaHealth;
     fighter.stocks = 0;
@@ -880,10 +1017,47 @@ function handleFighterRingOut(fighter) {
   const particleX = Math.max(stage.width * 0.12, Math.min(stage.width * 0.88, fighter.x));
   spawnParticles(particleX, Math.min(stage.floorY + 80, fighter.y), fighter.color, fighter.stocks <= 0 ? 54 : 28);
   runtime.game.shake = Math.max(runtime.game.shake, fighter.stocks <= 0 ? COMBAT.finalRingOutShake : COMBAT.sideRingOutShake);
+  runtime.pendingGameEvents.push({ type: 'ko', fighterId: fighter.id, playerName: fighter.name });
+}
+
+function resetTrainingDummy(fighter, stage) {
+  fighter.x = stage.width * 0.62;
+  fighter.y = stage.floorY - 38;
+  fighter.vx = 0;
+  fighter.vy = 0;
+  fighter.damage = 0;
+  fighter.respawn = 0;
+  fighter.eliminated = false;
+  fighter.stocks = fighter.maxStocks;
+  fighter.invuln = 30;
+}
+
+function updateStageHazard(deltaTime) {
+  const game = runtime.game;
+  game.hazardTimer -= deltaTime;
+  if (game.hazardTimer <= 0) {
+    game.hazardTimer = MATCH_OPTIONS.hazardCycle;
+    const stageIndex = game.stageId.length % 3;
+    game.hazard = {
+      type: ['crosswind', 'updraft', 'surge'][stageIndex],
+      direction: Math.random() < 0.5 ? -1 : 1,
+      timer: MATCH_OPTIONS.hazardDuration,
+    };
+    runtime.pendingGameEvents.push({ type: 'stage-hazard', hazard: game.hazard.type });
+  }
+  if (!game.hazard || game.hazard.timer <= 0) return;
+  game.hazard.timer = Math.max(0, game.hazard.timer - deltaTime);
+  for (const fighter of game.entities) {
+    if (fighter.eliminated || fighter.trainingDummy) continue;
+    if (game.hazard.type === 'crosswind') fighter.vx += game.hazard.direction * MATCH_OPTIONS.hazardPush * deltaTime;
+    if (game.hazard.type === 'updraft' && !fighter.grounded) fighter.vy -= MATCH_OPTIONS.hazardPush * 0.35 * deltaTime;
+    if (game.hazard.type === 'surge' && fighter.grounded) fighter.vx += game.hazard.direction * MATCH_OPTIONS.hazardPush * 0.55 * deltaTime;
+  }
 }
 function updateProjectiles(deltaTime) {
   for (const projectile of runtime.game.projectiles) {
     if (projectile.life <= 0) continue;
+    const previousY = projectile.y;
     projectile.x += projectile.vx;
     if (projectile.kind === 'bomb' || projectile.kind === 'banana') {
       projectile.vy += 0.12 * deltaTime;
@@ -901,7 +1075,7 @@ function updateProjectiles(deltaTime) {
       const overlapsX = Math.abs(target.x - projectile.x) < projectile.radius + COMBAT.projectileHitWidth;
       const overlapsY = Math.abs(target.y - projectile.y) < projectile.radius + COMBAT.projectileHitHeight;
       if (!overlapsX || !overlapsY) continue;
-      applyHit(owner, target, projectile.power, projectile.kind !== 'bullet');
+      applyHit(owner, target, projectile.power, projectile.kind !== 'bullet', '', Math.min(previousY, projectile.y));
       spawnParticles(projectile.x, projectile.y, projectile.color, 16);
       projectile.life = 0;
       break;
@@ -911,6 +1085,7 @@ function updateProjectiles(deltaTime) {
   runtime.game.projectiles = runtime.game.projectiles.filter((projectile) => projectile.life > 0);
 }
 function checkForMatchWinner() {
+  if (runtime.game.training) return;
   const remainingFighters = runtime.game.entities.filter((fighter) => !fighter.eliminated);
   let winner = remainingFighters[0] || null;
   if (remainingFighters.length > 1 && runtime.game.rulesMode === 'timed' && runtime.game.timeRemaining <= 0) {
@@ -926,5 +1101,52 @@ function checkForMatchWinner() {
   runtime.matchResultRendered = false;
 }
 
-  return { createMatch, removeDisconnectedFighter, updateGameSimulation };
+function resetTraining() {
+  const game = runtime.game;
+  if (!game.training) return;
+  for (const fighter of game.entities) {
+    fighter.damage = 0;
+    fighter.damageTaken = 0;
+    fighter.damageDealt = 0;
+    fighter.kos = 0;
+    fighter.falls = 0;
+    fighter.stocks = fighter.maxStocks;
+    fighter.eliminated = false;
+    fighter.respawn = 0;
+    fighter.invuln = 0;
+    fighter.weapon = null;
+    fighter.attackType = '';
+    fighter.attackTimer = 0;
+    fighter.hitstun = 0;
+    fighter.comboStep = 0;
+    fighter.comboWindow = 0;
+    fighter.attackCooldown = 0;
+    fighter.specialCooldown = 0;
+    fighter.gustBoostTimer = 0;
+    fighter.attackWarmup = 0;
+    fighter.attackActiveTimer = 0;
+    fighter.jumpCount = 0;
+    fighter.jumpPose = 0;
+    fighter.grounded = true;
+    fighter.x = fighter.spawnX;
+    fighter.y = game.stageLayout.floorY - 38;
+    fighter.vx = 0;
+    fighter.vy = 0;
+  }
+  game.projectiles = [];
+  game.items = [];
+  game.particles = [];
+  game.koEffects = [];
+  game.smashBall = null;
+  game.cinematic = null;
+  game.hazard = null;
+  game.hazardTimer = MATCH_OPTIONS.hazardCycle;
+  game.shake = 0;
+  game.elapsedTime = 0;
+  game.finished = false;
+  game.active = true;
+  game.winnerId = null;
+}
+
+return { createMatch, removeDisconnectedFighter, resetTraining, updateGameSimulation };
 }
