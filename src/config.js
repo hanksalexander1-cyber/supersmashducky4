@@ -48,12 +48,14 @@ export const STAGES = [
     platforms: [{ x: 110, w: 300, y: 350 }, { x: 550, w: 300, y: 350 }, { x: 250, w: 260, y: 285 }, { x: 450, w: 260, y: 285 }, { x: 80, w: 170, y: 220 }, { x: 710, w: 170, y: 220 }],
   },
   {
-    id: 'ects-arena', name: 'ECTS Arena', tag: 'FLOATING CLASSROOM', width: 1200, floorY: 350,
+    id: 'ects-arena', name: 'ECTS Arena', tag: 'FLOATING CLASSROOM', width: 1200,
+    floorY: 424.00428265524624, blastY: 532.1255147422171, playableLeft: 37.2, playableRight: 922.8,
     background: 'myPhotos/classroom.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#46265b', '#754b96', '#211c3a'], top: '#f3a6ff',
     platforms: [
-      { x: 110, w: 180, y: 205 }, { x: 670, w: 180, y: 205 },
-      { x: 345, w: 270, y: 245 }, { x: 120, w: 220, y: 330 }, { x: 620, w: 220, y: 330 },
+      { x: 113.6, w: 175.4, y: 185, solid: false }, { x: 670, w: 172.7, y: 186.1, solid: false },
+      { x: 352.3, w: 250.9, y: 223.7, solid: false },
+      { x: 155.5, w: 180.8, y: 309.6, solid: false }, { x: 621.8, w: 186.3, y: 308.5, solid: false },
     ],
   },
   {
