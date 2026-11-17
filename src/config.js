@@ -49,7 +49,8 @@ export const STAGES = [
   },
   {
     id: 'ects-arena', name: 'ECTS Arena', tag: 'FLOATING CLASSROOM', width: 1200,
-    floorY: 424.00428265524624, blastY: 532.1255147422171, playableLeft: 37.2, playableRight: 922.8,
+    floorY: 424.00428265524624, blastTop: -160, blastY: 532.1255147422171,
+    playableLeft: 37.2, playableRight: 922.8,
     background: 'myPhotos/classroom.png', backgroundMode: 'cover', hidePlatforms: true,
     sky: ['#46265b', '#754b96', '#211c3a'], top: '#f3a6ff',
     platforms: [
@@ -145,7 +146,7 @@ export function getStageLayout(stageId) {
     ...stage,
     width,
     floorY,
-    blastTop: ARENA.blastTop * verticalScale,
+    blastTop: stage.blastTop ?? ARENA.blastTop * verticalScale,
     blastY: stage.blastY ?? floorY + ARENA.blastY - ARENA.floorY,
     blastLeft: ARENA.blastLeft * horizontalScale,
     blastRight: width + (ARENA.blastRight - ARENA.width) * horizontalScale,

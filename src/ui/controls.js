@@ -4,6 +4,56 @@
 import { CONTROL_LABELS, DEFAULT_CONTROLS } from '../config.js';
 
 export function createControlSettings({ runtime, querySelector, querySelectorAll, emptyInput, sendInput, setInputState, escapeHtml }) {
+  const gamepadActions = emptyInput();
+  const GAMEPAD_DEADZONE = 0.35;
+
+  function isGamepadButtonPressed(gamepad, buttonIndex) {
+    return !!gamepad.buttons[buttonIndex]?.pressed;
+  }
+
+  function readGamepadInput(gamepad) {
+    const horizontalAxis = gamepad.axes[0] || 0;
+    const verticalAxis = gamepad.axes[1] || 0;
+    return {
+      left: isGamepadButtonPressed(gamepad, 14) || horizontalAxis < -GAMEPAD_DEADZONE,
+      right: isGamepadButtonPressed(gamepad, 15) || horizontalAxis > GAMEPAD_DEADZONE,
+      up: isGamepadButtonPressed(gamepad, 12) || verticalAxis < -GAMEPAD_DEADZONE,
+      down: isGamepadButtonPressed(gamepad, 13) || verticalAxis > GAMEPAD_DEADZONE,
+      jump: isGamepadButtonPressed(gamepad, 0),
+      attack: isGamepadButtonPressed(gamepad, 2),
+      smash: isGamepadButtonPressed(gamepad, 3),
+      special: isGamepadButtonPressed(gamepad, 1),
+      dropItem: isGamepadButtonPressed(gamepad, 5),
+      shield: isGamepadButtonPressed(gamepad, 4),
+    };
+  }
+
+  function pollGamepadInput() {
+    if (runtime.state.screen === 'game' && !runtime.isSpectator && querySelector('#controlsModal').hidden) {
+      const gamepad = Array.from(navigator.getGamepads?.() || []).find((candidate) => candidate?.connected);
+      const controllerInput = gamepad ? readGamepadInput(gamepad) : emptyInput();
+      const nextInput = Object.fromEntries(Object.keys(controllerInput).map((action) => {
+        const binding = runtime.controlBindings[action];
+        const otherInputPressed = [...runtime.pressedKeys].some((key) => (
+          normalizeKey(key) === binding || key === `Touch-${action}`
+        ));
+        return [action, controllerInput[action] || otherInputPressed];
+      }));
+      for (const action of Object.keys(gamepadActions)) {
+        if (gamepadActions[action] === nextInput[action]) continue;
+        gamepadActions[action] = nextInput[action];
+        setInputState(action, nextInput[action]);
+      }
+    } else {
+      for (const action of Object.keys(gamepadActions)) {
+        if (!gamepadActions[action]) continue;
+        gamepadActions[action] = false;
+        setInputState(action, false);
+      }
+    }
+    requestAnimationFrame(pollGamepadInput);
+  }
+
   function normalizeKey(key) {
     if (key === ' ') return 'Space';
     return key.length === 1 ? key.toLowerCase() : key;
@@ -155,6 +205,7 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
   }
 
   function bindBattleInputs() {
+    requestAnimationFrame(pollGamepadInput);
     window.addEventListener('blur', () => {
       runtime.localInput = emptyInput();
       runtime.pressedKeys.clear();
@@ -191,11 +242,13 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
         if (runtime.isSpectator) return;
         event.preventDefault();
         button.classList.add('pressed');
+        runtime.pressedKeys.add(`Touch-${action}`);
         setInputState(action, true);
       };
       const release = (event) => {
         event.preventDefault();
         button.classList.remove('pressed');
+        runtime.pressedKeys.delete(`Touch-${action}`);
         setInputState(action, false);
       };
       button.addEventListener('pointerdown', press);
