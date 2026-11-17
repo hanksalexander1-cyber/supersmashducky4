@@ -1,24 +1,40 @@
-// Builds the control-remapping interface and translates keyboard or touch
+// Builds the control-remapping interface and translates keyboard, touch, or controller
 // input into game actions using each player's current bindings. It tracks key
 // state and sends the resulting inputs through the supplied callbacks.
 import { CONTROL_LABELS, DEFAULT_CONTROLS } from '../config.js';
 
 export function createControlSettings({ runtime, querySelector, querySelectorAll, emptyInput, sendInput, setInputState, escapeHtml }) {
   const gamepadActions = emptyInput();
+  const previousGamepadButtons = new Map();
   const GAMEPAD_DEADZONE = 0.35;
 
+  function getConnectedGamepads() {
+    return Array.from(navigator.getGamepads?.() || []).filter((gamepad) => gamepad?.connected);
+  }
+
   function isGamepadButtonPressed(gamepad, buttonIndex) {
-    return !!gamepad.buttons[buttonIndex]?.pressed;
+    const button = gamepad.buttons[buttonIndex];
+    return !!button?.pressed || (button?.value || 0) > 0.5;
+  }
+
+  function findActiveGamepad() {
+    const gamepads = getConnectedGamepads();
+    return gamepads.find((gamepad) => (
+      gamepad.buttons.some((button) => button.pressed || button.value > 0.5)
+      || gamepad.axes.some((axis) => Math.abs(axis) > GAMEPAD_DEADZONE)
+    )) || gamepads[0];
   }
 
   function readGamepadInput(gamepad) {
     const horizontalAxis = gamepad.axes[0] || 0;
     const verticalAxis = gamepad.axes[1] || 0;
-    return {
-      left: isGamepadButtonPressed(gamepad, 14) || horizontalAxis < -GAMEPAD_DEADZONE,
-      right: isGamepadButtonPressed(gamepad, 15) || horizontalAxis > GAMEPAD_DEADZONE,
-      up: isGamepadButtonPressed(gamepad, 12) || verticalAxis < -GAMEPAD_DEADZONE,
-      down: isGamepadButtonPressed(gamepad, 13) || verticalAxis > GAMEPAD_DEADZONE,
+    const dpadHorizontalAxis = gamepad.axes[6] || 0;
+    const dpadVerticalAxis = gamepad.axes[7] || 0;
+    const standardInput = {
+      left: isGamepadButtonPressed(gamepad, 14) || horizontalAxis < -GAMEPAD_DEADZONE || dpadHorizontalAxis < -GAMEPAD_DEADZONE,
+      right: isGamepadButtonPressed(gamepad, 15) || horizontalAxis > GAMEPAD_DEADZONE || dpadHorizontalAxis > GAMEPAD_DEADZONE,
+      up: isGamepadButtonPressed(gamepad, 12) || verticalAxis < -GAMEPAD_DEADZONE || dpadVerticalAxis < -GAMEPAD_DEADZONE,
+      down: isGamepadButtonPressed(gamepad, 13) || verticalAxis > GAMEPAD_DEADZONE || dpadVerticalAxis > GAMEPAD_DEADZONE,
       jump: isGamepadButtonPressed(gamepad, 0),
       attack: isGamepadButtonPressed(gamepad, 2),
       smash: isGamepadButtonPressed(gamepad, 3),
@@ -26,11 +42,32 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
       dropItem: isGamepadButtonPressed(gamepad, 5),
       shield: isGamepadButtonPressed(gamepad, 4),
     };
+    return Object.fromEntries(Object.entries(standardInput).map(([action, isPressed]) => {
+      const binding = runtime.controlBindings[action];
+      if (!binding.startsWith('GamepadButton')) return [action, isPressed];
+      const buttonIndex = Number(binding.slice('GamepadButton'.length));
+      return [action, isGamepadButtonPressed(gamepad, buttonIndex)];
+    }));
+  }
+
+  function captureGamepadRemap(gamepads) {
+    for (const gamepad of gamepads) {
+      gamepad.buttons.forEach((button, buttonIndex) => {
+        const key = `${gamepad.index}:${buttonIndex}`;
+        const wasPressed = previousGamepadButtons.get(key) || false;
+        const isPressed = !!button.pressed || button.value > 0.5;
+        previousGamepadButtons.set(key, isPressed);
+        if (!runtime.remappingAction || !isPressed || wasPressed) return;
+        assignBinding(`GamepadButton${buttonIndex}`);
+      });
+    }
   }
 
   function pollGamepadInput() {
+    const gamepads = getConnectedGamepads();
+    captureGamepadRemap(gamepads);
     if (runtime.state.screen === 'game' && !runtime.isSpectator && querySelector('#controlsModal').hidden) {
-      const gamepad = Array.from(navigator.getGamepads?.() || []).find((candidate) => candidate?.connected);
+      const gamepad = findActiveGamepad();
       const controllerInput = gamepad ? readGamepadInput(gamepad) : emptyInput();
       const nextInput = Object.fromEntries(Object.keys(controllerInput).map((action) => {
         const binding = runtime.controlBindings[action];
@@ -72,6 +109,7 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
       MouseBack: 'MOUSE BACK',
       MouseForward: 'MOUSE FORWARD',
     };
+    if (key.startsWith('GamepadButton')) return `PAD ${Number(key.slice(13)) + 1}`;
     return labels[key] || key.toUpperCase();
   }
 
@@ -103,7 +141,13 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
     const modal = querySelector('#controlsModal');
     modal.hidden = !isOpen;
     runtime.remappingAction = null;
-    querySelector('#controlFeedback').textContent = 'Controls are ready.';
+    let feedback = 'Controls are ready.';
+    if (isOpen) {
+      feedback = getConnectedGamepads().length
+        ? 'Controller detected. Use Remap to assign its buttons.'
+        : 'No controller detected by the browser. Connect it, press a button, then try Remap.';
+    }
+    querySelector('#controlFeedback').textContent = feedback;
 
     if (isOpen) {
       runtime.localInput = emptyInput();
@@ -118,7 +162,7 @@ export function createControlSettings({ runtime, querySelector, querySelectorAll
 
   function beginRemap(action) {
     runtime.remappingAction = action;
-    querySelector('#controlFeedback').textContent = `Press a key or mouse button for ${CONTROL_LABELS[action]}. Press Escape to cancel.`;
+    querySelector('#controlFeedback').textContent = `Press a key, mouse button, or controller button for ${CONTROL_LABELS[action]}. Press Escape to cancel.`;
     renderControlRows();
     querySelector(`#controlRows [data-remap-action="${action}"]`).focus();
   }

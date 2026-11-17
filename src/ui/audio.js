@@ -78,6 +78,7 @@ export function createAudioFeedback({ querySelector, notify }) {
   function play(eventName) {
     const sounds = {
       attack: [230, 0.06, -90],
+      gunshot: [380, 0.11, -250],
       hit: [150, 0.12, -95],
       ko: [540, 0.35, -420],
       smash: [410, 0.5, 720],
@@ -85,7 +86,10 @@ export function createAudioFeedback({ querySelector, notify }) {
       start: [330, 0.4, 390],
     };
     const sound = sounds[eventName];
-    if (sound) playTone(sound[0], sound[1], effectsVolume * 0.22, eventName === 'hit' ? 'triangle' : 'sine', sound[2]);
+    if (sound) {
+      const volume = effectsVolume * (eventName === 'gunshot' ? 0.45 : 0.22);
+      playTone(sound[0], sound[1], volume, eventName === 'hit' ? 'triangle' : 'sine', sound[2]);
+    }
   }
 
   function updateMusic() {

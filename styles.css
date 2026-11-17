@@ -9,6 +9,9 @@
   --muted:#9eabb7;
   --red:#fa493b;
   --gold:#ffca55;
+  --violet:#a879ff;
+  --cyan:#55e5ff;
+  --pink:#ff63b5;
   --line:rgba(255,255,255,.13);
   --green:#63d9a0
 }
@@ -21,8 +24,8 @@ body {
   color:var(--paper);
   font-family:'DM Sans',sans-serif;
   min-height:100vh;
-  background-image:radial-gradient(ellipse at 50% -10%,#293b4c 0,transparent 42%),linear-gradient(130deg,rgba(255,255,255,.018) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.018) 50%,rgba(255,255,255,.018) 75%,transparent 75%);
-  background-size:auto,18px 18px
+  background-image:radial-gradient(ellipse at 12% 26%,#a879ff20 0,transparent 32%),radial-gradient(ellipse at 88% 14%,#35dfff18 0,transparent 34%),radial-gradient(ellipse at 50% -10%,#293b4c 0,transparent 42%),linear-gradient(130deg,rgba(255,255,255,.018) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.018) 50%,rgba(255,255,255,.018) 75%,transparent 75%);
+  background-size:auto,auto,auto,18px 18px
 }
 button,input {
   font:inherit
@@ -145,8 +148,8 @@ button {
   text-align:left
 }
 .lobby-card {
-  background:linear-gradient(145deg,#273747,#1c2733);
-  border:1px solid var(--line);
+  background:linear-gradient(145deg,#34304a,#202d3d 58%,#182b37);
+  border:1px solid color-mix(in srgb,var(--violet) 32%,var(--line));
   padding:22px;
   border-radius:15px;
   box-shadow:0 12px 28px #080d1370
@@ -182,8 +185,8 @@ button {
   outline:none
 }
 .text-field:focus {
-  border-color:var(--gold);
-  box-shadow:0 0 0 3px #ffca5522
+  border-color:var(--cyan);
+  box-shadow:0 0 0 3px #55e5ff2b,0 0 18px #55e5ff30
 }
 .btn {
   border:0;
@@ -198,7 +201,8 @@ button {
 }
 .btn:hover {
   transform:translateY(-2px);
-  filter:brightness(1.07)
+  filter:brightness(1.14) saturate(1.15);
+  box-shadow:0 0 18px #a879ff55
 }
 .btn:disabled {
   opacity:.4;
@@ -206,14 +210,14 @@ button {
   transform:none
 }
 .btn-gold {
-  background:var(--gold);
+  background:linear-gradient(110deg,#ffe06d,#ffb33f 52%,#ff8b62);
   color:#1a2229;
   box-shadow:0 3px 0 #a97825
 }
 .btn-dark {
   color:#f4f2e9;
-  background:#354657;
-  border:1px solid #526170
+  background:linear-gradient(110deg,#364d63,#39405c 58%,#4b3560);
+  border:1px solid #7d79a5
 }
 .lobby-card .btn {
   margin-top:11px;
@@ -974,6 +978,9 @@ button {
 }
 .guard-track i {
   background:linear-gradient(90deg,#62c7e8,#c0f7ff)
+}
+.guard-track.overshield i {
+  background:linear-gradient(90deg,#f0a83d,#fff0a3)
 }
 .battle-fighter.ultimate-ready {
   border-color:#ffda6c;

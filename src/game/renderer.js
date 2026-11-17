@@ -1,7 +1,7 @@
 // Canvas presentation layer for the live match. It reads the current runtime
 // state and draws stage art, duck sprites and poses, combat effects, items,
 // and overlays; game rules and networking are handled by separate modules.
-import { ARENA, CAMERA, KO_EFFECT, SPAWN_PLATFORM, getStageLayout } from '../config.js';
+import { ARENA, CAMERA, ITEMS, KO_EFFECT, SPAWN_PLATFORM, VFX, getStageLayout } from '../config.js';
 import { drawStageBackground } from './stage-art.js';
 
 export function createBattleRenderer({ runtime, querySelector, backgroundImages, spriteCache }) {
@@ -171,7 +171,7 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     const bob = Math.sin(performance.now() / 110) * 5;
     const centerY = smashBall.y + bob;
     context.save();
-    context.shadowColor = '#ffd94d';
+    context.shadowColor = '#d36bff';
     context.shadowBlur = 30;
 
     const aura = context.createRadialGradient(
@@ -179,16 +179,18 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
       smashBall.x, centerY, 37,
     );
     aura.addColorStop(0, '#fffde8');
-    aura.addColorStop(0.35, '#ffe274');
-    aura.addColorStop(0.72, '#ff9e35');
-    aura.addColorStop(1, '#ff8a2500');
+    aura.addColorStop(0.35, '#fff4ff');
+    aura.addColorStop(0.58, '#f05bdf');
+    aura.addColorStop(0.8, '#42dfff');
+    aura.addColorStop(1, '#8a4cff00');
     context.fillStyle = aura;
     context.beginPath();
     context.arc(smashBall.x, centerY, 38, 0, Math.PI * 2);
     context.fill();
 
     context.shadowBlur = 0;
-    context.strokeStyle = '#fff3a7';
+    drawRainbowSmashBallDisc(context, smashBall.x, centerY);
+    context.strokeStyle = '#fff3ff';
     context.lineWidth = 2;
     context.beginPath();
     context.arc(smashBall.x, centerY, 19, 0, Math.PI * 2);
@@ -200,6 +202,34 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.textAlign = 'center';
     context.fillText(String(smashBall.hp), smashBall.x, centerY + 3);
     context.restore();
+  }
+
+  function drawRainbowSmashBallDisc(context, centerX, centerY) {
+    const rotation = performance.now() / VFX.smashBallRainbowRotationMs;
+    if (context.createConicGradient) {
+      const rainbow = context.createConicGradient(rotation, centerX, centerY);
+      rainbow.addColorStop(0, '#ff4f83');
+      rainbow.addColorStop(0.17, '#ffad42');
+      rainbow.addColorStop(0.34, '#fff06a');
+      rainbow.addColorStop(0.51, '#54e58b');
+      rainbow.addColorStop(0.68, '#48dfff');
+      rainbow.addColorStop(0.84, '#7869ff');
+      rainbow.addColorStop(1, '#ff4f83');
+      context.fillStyle = rainbow;
+      context.beginPath();
+      context.arc(centerX, centerY, VFX.smashBallRainbowRadius, 0, Math.PI * 2);
+      context.fill();
+      return;
+    }
+    const rainbowColors = ['#ff4f83', '#ffad42', '#fff06a', '#54e58b', '#48dfff', '#7869ff'];
+    rainbowColors.forEach((color, colorIndex) => {
+      const startAngle = rotation + colorIndex * Math.PI / 3;
+      context.strokeStyle = color;
+      context.lineWidth = 5;
+      context.beginPath();
+      context.arc(centerX, centerY, VFX.smashBallRainbowRadius, startAngle, startAngle + Math.PI / 3 + 0.03);
+      context.stroke();
+    });
   }
 
   function drawSmashBallStar(context, centerX, centerY) {
@@ -222,7 +252,11 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
   }
 
   function drawProjectile(context, projectile) {
-    if (projectile.kind === 'bomb' || projectile.kind === 'banana') {
+    if (projectile.kind === 'isaac-puddle') {
+      drawIsaacPuddle(context, projectile);
+      return;
+    }
+    if (projectile.kind === 'bomb' || projectile.kind === 'banana' || projectile.kind === 'isaac-throwable') {
       drawThrownItem(context, projectile);
       return;
     }
@@ -236,9 +270,10 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
 
     context.save();
     context.strokeStyle = projectile.color;
-    context.lineWidth = 4;
+    const isGunshot = projectile.kind === 'bullet';
+    context.lineWidth = isGunshot ? VFX.gunTrailWidth : 4;
     context.shadowColor = projectile.color;
-    context.shadowBlur = 22;
+    context.shadowBlur = isGunshot ? VFX.gunTrailGlow : 22;
     context.beginPath();
     context.moveTo(projectile.x - projectile.vx * 3, projectile.y);
     context.lineTo(projectile.x, projectile.y);
@@ -256,6 +291,22 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.restore();
   }
 
+  function drawIsaacPuddle(context, puddle) {
+    const opacity = Math.min(ITEMS.isaacTrapMaxOpacity, puddle.life / ITEMS.isaacTrapFadeDuration);
+    context.save();
+    context.globalAlpha = opacity;
+    context.fillStyle = '#ff7045';
+    context.shadowColor = '#ff7045';
+    context.shadowBlur = 18;
+    context.beginPath();
+    context.ellipse(puddle.x, puddle.y, puddle.radius, ITEMS.isaacTrapVisualHeight, 0, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = '#ffd0a0';
+    context.lineWidth = 2;
+    context.stroke();
+    context.restore();
+  }
+
   function drawThrownItem(context, projectile) {
     context.save();
     context.strokeStyle = projectile.color;
@@ -266,7 +317,8 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.moveTo(projectile.x - projectile.vx * 2, projectile.y - projectile.vy * 2);
     context.lineTo(projectile.x, projectile.y);
     context.stroke();
-    drawItemIcon(context, projectile.kind, projectile.x, projectile.y, 0.9);
+    const itemType = projectile.kind === 'isaac-throwable' ? 'isaac' : projectile.kind;
+    drawItemIcon(context, itemType, projectile.x, projectile.y, 0.9);
     context.restore();
   }
 
@@ -461,7 +513,8 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     const pose = getFighterPose(fighter);
     drawFighterShadow(context, fighter);
     drawSpawnProtection(context, fighter);
-    if (fighter.guarding) drawGuardBubble(context, fighter);
+    if (fighter.overshield > 0) drawOvershield(context, fighter);
+    if (fighter.guarding && fighter.guard > 0) drawGuardBubble(context, fighter);
     if (fighter.jumpStyle === 3 && fighter.jumpPose > 0) drawThirdJumpAura(context, fighter);
     if (fighter.flash > 0) drawHitFlash(context, fighter);
     drawFighterArtwork(context, fighter, duck, pose);
@@ -672,6 +725,24 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
     context.restore();
   }
 
+  function drawOvershield(context, fighter) {
+    context.save();
+    context.globalAlpha = Math.min(
+      ITEMS.overshieldMaxOpacity,
+      fighter.overshield / ITEMS.overshieldAmount * ITEMS.overshieldMaxOpacity,
+    );
+    context.strokeStyle = '#ffda70';
+    context.fillStyle = '#ffe89a18';
+    context.lineWidth = 3;
+    context.shadowColor = '#ffcf55';
+    context.shadowBlur = 20;
+    context.beginPath();
+    context.ellipse(fighter.x, fighter.y, 47, 56, 0, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.restore();
+  }
+
   function drawThirdJumpAura(context, fighter) {
     const pulse = performance.now();
     context.save();
@@ -858,6 +929,14 @@ export function createBattleRenderer({ runtime, querySelector, backgroundImages,
       context.shadowColor = particle.color;
       context.shadowBlur = 10;
       context.beginPath();
+      if (particle.ring) {
+        const expansion = Math.max(2, particle.size * (1 - lifeRatio));
+        context.strokeStyle = particle.color;
+        context.lineWidth = VFX.impactRingWidth * lifeRatio;
+        context.arc(particle.x, particle.y, expansion, 0, Math.PI * 2);
+        context.stroke();
+        continue;
+      }
       context.arc(particle.x, particle.y, particle.size * Math.max(0.25, lifeRatio), 0, Math.PI * 2);
       context.fill();
     }

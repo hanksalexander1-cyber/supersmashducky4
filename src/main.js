@@ -11,7 +11,7 @@ import { createPlatformEditor } from './ui/platform-editor.js';
 import { createRosterUI } from './ui/roster.js';
 import { createAudioFeedback } from './ui/audio.js';
 import {
-  API_URL, ARENA, BATTLE_MODES, COLORS, CONTROL_LABELS, DEFAULT_CONTROLS, MAP_EDITOR_ACCESS_SEQUENCE, MATCH_OPTIONS, SHEETS, SPRITE_SHEET, STAGES, TEST_DUCK_ACCESS_SEQUENCE, TIMING, getStageLayout, setStageGround, setStagePlatforms,
+  API_URL, ARENA, BATTLE_MODES, COLORS, CONTROL_LABELS, DEFAULT_CONTROLS, GUARD, ITEMS, MAP_EDITOR_ACCESS_SEQUENCE, MATCH_OPTIONS, SHEETS, SPRITE_SHEET, STAGES, TEST_DUCK_ACCESS_SEQUENCE, TIMING, getStageLayout, setStageGround, setStagePlatforms,
 } from './config.js';
 
 
@@ -524,6 +524,7 @@ function applySnapshot(s, networkEvents = []) {
   for (const event of networkEvents) {
     replayEvents.push({ frame: game.elapsedTime || 0, ...event });
     if (event.type === 'attack') audioFeedback.play('attack');
+    if (event.type === 'gunshot') audioFeedback.play('gunshot');
     if (event.type === 'hit') audioFeedback.play('hit');
     if (event.type === 'ko') audioFeedback.play('ko');
     if (event.type === 'smash-ball-claimed') audioFeedback.play('smash');
@@ -541,7 +542,7 @@ function applySnapshot(s, networkEvents = []) {
       const previous = previousFighters.get(fighter.id);
       if (!previous) return fighter;
       remoteTargets.set(fighter.id, fighter);
-      return { ...fighter, x: previous.x, y: previous.y, damage: previous.damage, focus: previous.focus, guard: previous.guard };
+      return { ...fighter, x: previous.x, y: previous.y, damage: previous.damage, focus: previous.focus, guard: previous.guard, overshield: previous.overshield };
     });
   } else game.entities = incoming;
   Object.assign(game, {
@@ -600,14 +601,19 @@ function renderBattleHud() {
     const hp = Math.max(0, 100 - Math.min(100, damage));
     const focus = Number.isFinite(fighter.focus) ? Math.max(0, Math.min(100, fighter.focus)) : 0;
     const bar = stamina ? 100 - hp : Math.min(100, damage);
-    const itemNames = { blaster: 'Blaster · attack to fire', bomb: 'Bomb · attack to throw', banana: 'Banana · attack to throw', isaac: 'Isaac · attack to summon' };
+    const itemNames = { blaster: 'Blaster · 6 shots', bomb: 'Bomb · attack to throw', banana: 'Banana · attack to throw', isaac: 'Isaac · throw to make a slow puddle', spring: 'Spring boost · attack to launch' };
     const itemInfo = fighter.weapon ? `<div class="item-equipped">${itemNames[fighter.weapon.type] || 'Item · attack to use'} (${fighter.weapon.ammo})</div>` : '';
     const stocks = stamina ? '' : `<div class="stock-dots">${Array.from({ length: fighter.maxStocks || 3 }, (_, index) => `<i class="${index >= fighter.stocks ? 'lost' : ''}"></i>`).join('')}</div>`;
     const meterLabel = stamina ? `${Math.ceil(hp)} HP` : `${Math.round(damage)}%`;
     const mainMeter = stamina
       ? `<div class="health-track"><i style="width:${hp}%"></i></div>`
       : '<div class="damage-track"><i></i></div>';
-    return `<div class="battle-fighter ${fighter.ultimateReady ? 'ultimate-ready' : ''}" style="--pcolor:${fighter.color};--damage-heat:${bar}%"><img class="battle-avatar" src="${spriteCache.get(fighter.duckId) || ''}" alt=""><div class="battle-meta"><div class="battle-player">P${fighter.slot} · ${escapeHtml(fighter.name)}${fighter.id === local?.id ? ' (YOU)' : ''}</div><div class="battle-duck">${escapeHtml(duck?.name || 'Duck')}</div>${itemInfo}${fighter.ultimateReady ? '<div class="ultimate-badge">FACE + SPECIAL</div>' : ''}${stocks}<div class="focus-caption"><span>FOCUS</span><b>${Math.round(focus)}%</b></div><div class="focus-track"><i style="width:${focus}%"></i></div><div class="guard-track"><i style="width:${Math.max(0, fighter.guard || 0)}%"></i></div>${mainMeter}</div><div class="battle-damage">${meterLabel}<small>${stamina ? 'HEALTH' : 'DAMAGE'}</small></div></div>`;
+    const shieldAmount = Math.max(0, fighter.overshield || 0);
+    const guardAmount = Math.max(0, fighter.guard || 0);
+    const shieldTrackClass = shieldAmount > 0 ? 'guard-track overshield' : 'guard-track';
+    const shieldTrackMaximum = shieldAmount > 0 ? ITEMS.overshieldAmount : GUARD.maximum;
+    const shieldTrackAmount = Math.min(shieldTrackMaximum, shieldAmount > 0 ? shieldAmount : guardAmount);
+    return `<div class="battle-fighter ${fighter.ultimateReady ? 'ultimate-ready' : ''}" style="--pcolor:${fighter.color};--damage-heat:${bar}%"><img class="battle-avatar" src="${spriteCache.get(fighter.duckId) || ''}" alt=""><div class="battle-meta"><div class="battle-player">P${fighter.slot} · ${escapeHtml(fighter.name)}${fighter.id === local?.id ? ' (YOU)' : ''}</div><div class="battle-duck">${escapeHtml(duck?.name || 'Duck')}</div>${itemInfo}${fighter.ultimateReady ? '<div class="ultimate-badge">FACE + SPECIAL</div>' : ''}${stocks}<div class="focus-caption"><span>FOCUS</span><b>${Math.round(focus)}%</b></div><div class="focus-track"><i style="width:${focus}%"></i></div><div class="${shieldTrackClass}" title="${shieldAmount > 0 ? 'Overshield' : 'Guard'}"><i style="width:${shieldTrackAmount}%"></i></div>${mainMeter}</div><div class="battle-damage">${meterLabel}<small>${stamina ? 'HEALTH' : 'DAMAGE'}</small></div></div>`;
   }).join('');
   if (game.rulesMode === 'timed' && game.timeRemaining != null && game.active && !game.finished) {
     const seconds = Math.ceil(game.timeRemaining / 60);
@@ -708,7 +714,7 @@ function applyStageDefinition(definition) {
 // Host-authoritative gameplay simulation
 function interpolateRemoteFighters() {
     if(isHost)return;for(const e of game.entities) {
-      const t=remoteTargets.get(e.id);if(!t)continue;e.x+=(t.x-e.x)*.28;e.y+=(t.y-e.y)*.28;e.damage+=(t.damage-e.damage)*.32;e.focus+=(t.focus-e.focus)*.32;e.guard+=(t.guard-e.guard)*.32;e.facing=t.facing;e.stocks=t.stocks;e.eliminated=t.eliminated;e.respawn=t.respawn;e.invuln=t.invuln;e.attacking=t.attacking;e.guarding=t.guarding
+      const t=remoteTargets.get(e.id);if(!t)continue;e.x+=(t.x-e.x)*.28;e.y+=(t.y-e.y)*.28;e.damage+=(t.damage-e.damage)*.32;e.focus+=(t.focus-e.focus)*.32;e.guard+=(t.guard-e.guard)*.32;e.overshield+=(t.overshield-e.overshield)*.32;e.facing=t.facing;e.stocks=t.stocks;e.eliminated=t.eliminated;e.respawn=t.respawn;e.invuln=t.invuln;e.attacking=t.attacking;e.guarding=t.guarding
     }
 }
   
@@ -721,6 +727,7 @@ function renderPendingGameEvents() {
     replayEvents.push({ frame: game.elapsedTime || 0, ...event });
     pendingNetworkEvents.push(event);
     if (event.type === 'attack') audioFeedback.play('attack');
+    if (event.type === 'gunshot') audioFeedback.play('gunshot');
     if (event.type === 'hit') audioFeedback.play('hit');
     if (event.type === 'ko') audioFeedback.play('ko');
     if (event.type === 'stage-hazard') {

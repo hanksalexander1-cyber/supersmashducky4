@@ -1,7 +1,7 @@
 // Authoritative game rules and frame-by-frame state updates: fighter movement,
 // attacks, damage and knockback, platforms and ledges, Smash Ball effects,
 // respawns, and match outcomes. It updates runtime data without drawing UI.
-import { BATTLE_RULES, COLORS, COMBAT, ITEMS, KO_EFFECT, LEDGE, MATCH_OPTIONS, PHYSICS, PLATFORM_DROP, SPECIAL, SPAWN_PLATFORM, getStageLayout } from '../config.js';
+import { BATTLE_RULES, COLORS, COMBAT, GUARD, ITEMS, KO_EFFECT, LEDGE, MATCH_OPTIONS, PHYSICS, PLATFORM_DROP, SPECIAL, SPAWN_PLATFORM, TIMING, VFX, getStageLayout } from '../config.js';
 
 export function createGameSimulation(runtime, emptyInput) {
 function createFighter(player, index, playerCount, stageLayout, options) {
@@ -23,7 +23,9 @@ function createFighter(player, index, playerCount, stageLayout, options) {
     stocks: options.startingStocks,
     maxStocks: options.startingStocks,
     focus: 0,
-    guard: 100,
+    guard: GUARD.maximum,
+    overshield: 0,
+    overshieldDelay: 0,
     facing: index % 2 ? -1 : 1,
     grounded: true,
     groundedPlatformY: null,
@@ -49,6 +51,7 @@ function createFighter(player, index, playerCount, stageLayout, options) {
     weapon: null,
     weaponCooldown: 0,
     gustBoostTimer: 0,
+    isaacSlowTimer: 0,
     ledgeGrabbed: false,
     ledgeSide: 0,
     ledgeRegrabCooldown: 0,
@@ -102,6 +105,12 @@ function addFiniteTotal(currentValue, amount) {
   const currentTotal = Number.isFinite(currentValue) ? Math.max(0, currentValue) : 0;
   const safeAmount = Number.isFinite(amount) ? Math.max(0, amount) : 0;
   return Math.min(Number.MAX_SAFE_INTEGER, currentTotal + safeAmount);
+}
+
+function absorbOvershield(fighter, damage) {
+  const absorbedDamage = Math.min(fighter.overshield || 0, damage);
+  fighter.overshield = Math.max(0, (fighter.overshield || 0) - absorbedDamage);
+  return damage - absorbedDamage;
 }
 
 function createMatch(activePlayers, stageId, rulesMode = 'stock', options = {}) {
@@ -158,21 +167,36 @@ function spawnParticles(x,y,color,count=9) {
       })
     }
 }
+
+function spawnRingEffect(x, y, color, size, lifetime) {
+  runtime.game.particles.push({
+    x,
+    y,
+    vx: 0,
+    vy: 0,
+    life: lifetime,
+    max: lifetime,
+    color,
+    size,
+    ring: true,
+  });
+}
   
-function applyHit(attacker,target,power,special=false,vertical='',sourceY=attacker.y) {
+function applyHit(attacker,target,power,special=false,vertical='',sourceY=attacker.y,strengthScale=special?COMBAT.specialStrengthDamageScale:COMBAT.normalStrengthDamageScale) {
   if (target.ledgeGrabbed && Number.isFinite(sourceY) && sourceY < target.y) return;
   const resistance = 1 - Math.min(0.42, target.stats.health * 0.03);
-  if (target.guard > 0 && runtime.game.inputs[target.id]?.shield) {
+  if (target.guarding && target.guard > 0) {
     applyGuardHit(attacker, target, special);
     return;
   }
 
   const safePower = Number.isFinite(power) ? Math.max(0, power) : 0;
   const strength = normalizeFighterStat(attacker.stats.strength);
-  const damage = safePower + strength * (special ? 0.65 : 0.38);
-  addDamage(target, damage);
-  target.damageTaken = addFiniteTotal(target.damageTaken, damage);
-  attacker.damageDealt = addFiniteTotal(attacker.damageDealt, damage);
+  const damage = safePower + strength * strengthScale;
+  const damageAfterOvershield = absorbOvershield(target, damage);
+  const healthDamage = addDamage(target, damageAfterOvershield);
+  target.damageTaken = addFiniteTotal(target.damageTaken, healthDamage);
+  attacker.damageDealt = addFiniteTotal(attacker.damageDealt, healthDamage);
   target.lastAttackerId = attacker.id;
   target.lastHitAt = runtime.game.elapsedTime;
   runtime.pendingGameEvents.push({ type: 'hit' });
@@ -203,6 +227,8 @@ function applyHit(attacker,target,power,special=false,vertical='',sourceY=attack
   if (target.ledgeGrabbed) releaseFighterFromLedge(target);
   const impactIntensity = Math.min(1, damage / 20);
   spawnParticles(target.x, target.y, special ? '#ffcf5d' : '#fff3c4', Math.round(16 + impactIntensity * 18));
+  const ringScale = special ? VFX.impactRingSpecialScale : 1;
+  spawnRingEffect(target.x, target.y, special ? '#ffcf5d' : '#fff3c4', VFX.impactRingSize * ringScale, VFX.impactRingLifetime);
   runtime.game.shake = Math.max(runtime.game.shake, (special ? 13 : 7) + impactIntensity * 7);
 }
 
@@ -226,14 +252,17 @@ function getHitLaunchVelocity(vertical, knockback) {
 }
 
 function applyGuardHit(attacker, target, special) {
-  target.guard = Math.max(0, target.guard - (special ? 35 : 24));
+  target.guard = Math.max(0, target.guard - (special ? GUARD.specialHitDrain : GUARD.normalHitDrain));
   target.vx = attacker.facing * (special ? 2.5 : 1.2);
   target.vy = special ? -2 : 0;
   target.flash = 5;
-  spawnParticles(target.x, target.y, '#9be9ff', 8);
+  spawnParticles(target.x, target.y, '#9be9ff', VFX.guardBlockParticles);
+  spawnRingEffect(target.x, target.y, '#9be9ff', VFX.impactRingSize * VFX.guardBlockRingScale, VFX.impactRingLifetime);
+  runtime.game.shake = Math.max(runtime.game.shake, VFX.guardBlockShake);
   if (target.guard !== 0) return;
 
-  target.hitstun = 48;
+  target.guarding = false;
+  target.hitstun = GUARD.comboBreakHitstun;
   runtime.game.shake = 9;
   if (!target.ledgeGrabbed) return;
   releaseFighterFromLedge(target);
@@ -324,9 +353,10 @@ function updateCinematic(deltaTime) {
 
       const resistance = 1 - Math.min(0.35, normalizeFighterStat(target.stats.health) * 0.02);
       const finalSmashDamage = 52 + Math.min(24, normalizeFighterStat(owner.stats.strength) * 0.8);
-      addDamage(target, finalSmashDamage);
-      target.damageTaken = addFiniteTotal(target.damageTaken, finalSmashDamage);
-      owner.damageDealt = addFiniteTotal(owner.damageDealt, finalSmashDamage);
+      const damageAfterOvershield = absorbOvershield(target, finalSmashDamage);
+      const healthDamage = addDamage(target, damageAfterOvershield);
+      target.damageTaken = addFiniteTotal(target.damageTaken, healthDamage);
+      owner.damageDealt = addFiniteTotal(owner.damageDealt, healthDamage);
       target.lastAttackerId = owner.id;
       target.lastHitAt = runtime.game.elapsedTime;
       const ownerStrength = normalizeFighterStat(owner.stats.strength);
@@ -361,8 +391,10 @@ function updateParticles(deltaTime) {
   for (const particle of runtime.game.particles) {
     particle.x += particle.vx;
     particle.y += particle.vy;
-    particle.vy += 0.16;
-    particle.vx *= 0.97;
+    if (!particle.ring) {
+      particle.vy += 0.16;
+      particle.vx *= 0.97;
+    }
     particle.life -= deltaTime;
   }
   runtime.game.particles = runtime.game.particles.filter((particle) => particle.life > 0);
@@ -406,7 +438,10 @@ function collectItem(fighter, item) {
   }
   if (item.type === 'gust') fighter.gustBoostTimer = ITEMS.gustBoostDuration;
   if (item.type === 'heart') fighter.damage = Math.max(0, (Number.isFinite(fighter.damage) ? fighter.damage : 0) - ITEMS.heartHealing);
-  if (item.type === 'shield') fighter.guard = Math.min(100, fighter.guard + ITEMS.shieldRestoration);
+  if (item.type === 'shield') {
+    fighter.overshield = Math.min(ITEMS.overshieldAmount, fighter.overshield + ITEMS.overshieldAmount);
+    fighter.overshieldDelay = ITEMS.overshieldDelay;
+  }
   const colors = {
     star: '#ffe65a',
     heart: '#ff6b87',
@@ -437,21 +472,19 @@ function dropHeldItem(fighter) {
   spawnParticles(fighter.x + fighter.facing * ITEMS.dropForwardOffset, fighter.y, '#ffe59c', 8);
 }
 
-function fireHeldItem(fighter, input) {
+function fireHeldItem(fighter) {
   const weapon = fighter.weapon;
   if (weapon.type === 'spring') {
     useSpring(fighter);
     consumeHeldItem(fighter, ITEMS.aimedItemCooldown);
     return;
   }
-  const isIsaac = weapon.type === 'isaac';
   const isBlaster = weapon.type === 'blaster';
   const isBomb = weapon.type === 'bomb';
   const kind = isBlaster ? 'bullet' : weapon.type;
-  if (isIsaac) {
-    fireAimedItem(fighter, input, weapon, ITEMS.isaacSpeed,
-      ITEMS.isaacDamage, ITEMS.isaacProjectileRadius,
-      ITEMS.isaacProjectileLife, '#ff7045');
+  if (weapon.type === 'isaac') {
+    throwIsaacTear(fighter);
+    consumeHeldItem(fighter, ITEMS.aimedItemCooldown);
     return;
   }
   const projectile = {
@@ -467,30 +500,31 @@ function fireHeldItem(fighter, input) {
     power: isBlaster ? ITEMS.gunDamage : isBomb ? ITEMS.bombDamage : ITEMS.bananaDamage,
   };
   runtime.game.projectiles.push(projectile);
-  spawnParticles(projectile.x, projectile.y, projectile.color, isBomb ? 12 : 6);
+  spawnParticles(projectile.x, projectile.y, projectile.color, isBlaster ? VFX.gunMuzzleParticles : isBomb ? 12 : 6);
+  if (isBlaster) {
+    spawnRingEffect(projectile.x, projectile.y, '#fff2a1', VFX.gunShotRingSize, VFX.gunShotRingLifetime);
+    runtime.game.shake = Math.max(runtime.game.shake, VFX.gunShotShake);
+    runtime.pendingGameEvents.push({ type: 'gunshot' });
+  }
   weapon.ammo -= 1;
   fighter.weaponCooldown = isBlaster ? ITEMS.gunCooldown : 20;
   if (weapon.ammo <= 0) fighter.weapon = null;
 }
 
-function fireAimedItem(fighter, input, weapon, speed, power, radius, life, color) {
-  const verticalAim = Number(input.down) - Number(input.up);
-  const directionLength = Math.hypot(1, verticalAim);
-  const projectile = {
+function throwIsaacTear(fighter) {
+  runtime.game.projectiles.push({
     ownerId: fighter.id,
-    kind: weapon.type,
-    x: fighter.x + fighter.facing * 34,
-    y: fighter.y - 10,
-    vx: fighter.facing * speed / directionLength,
-    vy: verticalAim * speed / directionLength,
-    life,
-    radius,
-    color,
-    power,
-  };
-  runtime.game.projectiles.push(projectile);
-  spawnParticles(projectile.x, projectile.y, color, 8);
-  consumeHeldItem(fighter, ITEMS.aimedItemCooldown);
+    kind: 'isaac-throwable',
+    x: fighter.x + fighter.facing * 28,
+    y: fighter.y - 8,
+    vx: fighter.facing * ITEMS.isaacThrowSpeed,
+    vy: ITEMS.isaacThrowVerticalSpeed,
+    life: ITEMS.lifetime,
+    radius: ITEMS.isaacThrowableRadius,
+    color: '#ff7045',
+    power: ITEMS.isaacTrapDamage,
+  });
+  spawnParticles(fighter.x + fighter.facing * 28, fighter.y - 8, '#ff9b6e', 12);
 }
 
 function useSpring(fighter) {
@@ -625,28 +659,42 @@ function updateFighterRespawn(fighter, deltaTime) {
   fighter.ledgeSide = 0;
   fighter.damage = 0;
   fighter.focus = 0;
-  fighter.guard = 100;
+  fighter.guard = GUARD.maximum;
+  fighter.overshield = 0;
+  fighter.overshieldDelay = 0;
   fighter.jumpCount = 0;
   fighter.attackType = '';
   fighter.attackTimer = 0;
   fighter.attackWarmup = 0;
   fighter.attackActiveTimer = 0;
   fighter.invuln = SPAWN_PLATFORM.invulnerability;
-  fighter.guard = 100;
   fighter.landSquash = 8;
   fighter.jumpHeld = !!runtime.game.inputs[fighter.id]?.jump;
   spawnParticles(fighter.x, fighter.y, fighter.color, 18);
 }
 function updateFighterTimers(fighter, deltaTime) {
-  for (const timer of ['invuln', 'attackCooldown', 'specialCooldown', 'hitstun', 'flash', 'comboWindow', 'ledgeRegrabCooldown', 'weaponCooldown', 'dropThroughTimer']) {
+  for (const timer of ['invuln', 'attackCooldown', 'specialCooldown', 'hitstun', 'flash', 'comboWindow', 'ledgeRegrabCooldown', 'weaponCooldown', 'dropThroughTimer', 'isaacSlowTimer']) {
     if (fighter[timer] > 0) fighter[timer] -= deltaTime;
   }
   fighter.gustBoostTimer = Math.max(0, fighter.gustBoostTimer - deltaTime);
+  if (fighter.overshieldDelay > 0) {
+    fighter.overshieldDelay = Math.max(0, fighter.overshieldDelay - deltaTime);
+  } else {
+    fighter.overshield = Math.max(0, fighter.overshield
+      - ITEMS.overshieldDecayPerSecond / TIMING.simulationFramesPerSecond * deltaTime);
+  }
 }
 function updateFighterGuard(fighter, input, deltaTime) {
-  fighter.guarding = !!input.shield;
-  if (input.shield) fighter.guard = Math.max(0, fighter.guard - 0.17 * deltaTime);
-  else fighter.guard = Math.min(100, fighter.guard + 0.1 * deltaTime);
+  const canRaiseGuard = input.shield
+    && fighter.hitstun <= 0
+    && (fighter.guarding || fighter.guard >= GUARD.minimumActivation);
+  fighter.guarding = canRaiseGuard;
+  if (canRaiseGuard) {
+    fighter.guard = Math.max(0, fighter.guard - GUARD.drainPerFrame * deltaTime);
+    if (fighter.guard <= 0) fighter.guarding = false;
+  } else if (!input.shield || fighter.hitstun > 0) {
+    fighter.guard = Math.min(GUARD.maximum, fighter.guard + GUARD.regenerationPerFrame * deltaTime);
+  }
 }
 function getPressedAttackInputs(fighter, input) {
   const pressed = {
@@ -668,9 +716,10 @@ function updateFighterMovementInput(fighter, input, deltaTime) {
   }
   const direction = Number(input.right) - Number(input.left);
   const gustSpeedBonus = fighter.gustBoostTimer > 0 ? ITEMS.gustSpeedBonus : 0;
-  const speed = PHYSICS.baseRunSpeed
+  const slowMultiplier = fighter.isaacSlowTimer > 0 ? ITEMS.isaacSlowMultiplier : 1;
+  const speed = (PHYSICS.baseRunSpeed
     + Math.min(PHYSICS.focusRunBonus, fighter.stats.focus / 30)
-    + gustSpeedBonus;
+    + gustSpeedBonus) * slowMultiplier;
   const acceleration = fighter.grounded ? PHYSICS.groundAcceleration : PHYSICS.airAcceleration;
   if (direction !== 0) {
     fighter.vx += (direction * speed - fighter.vx) * acceleration * deltaTime;
@@ -738,9 +787,13 @@ function handleFighterAttacks(fighter, input, pressed, deltaTime) {
     dropHeldItem(fighter);
     return;
   }
-  if (fighter.hitstun <= 0 && pressed.jabPressed && fighter.weapon?.ammo > 0 && fighter.weaponCooldown <= 0) {
-    fireHeldItem(fighter, input);
-    return;
+  if (fighter.weapon?.type === 'blaster' && fighter.weaponCooldown > 0) return;
+  if (fighter.hitstun <= 0 && pressed.jabPressed && fighter.weapon) {
+    if (fighter.weaponCooldown > 0) return;
+    if (fighter.weapon.ammo > 0) {
+      fireHeldItem(fighter);
+      return;
+    }
   }
   if (fighter.hitstun <= 0 && fighter.attackCooldown <= 0 && pressed.smashPressed) {
     startAttack(fighter, input.up ? 'smash-up' : input.down ? 'smash-down' : 'smash-forward', 31, 8, 40);
@@ -1012,6 +1065,9 @@ function handleFighterRingOut(fighter) {
   if (fighter.stocks <= 0) fighter.eliminated = true;
   else fighter.respawn = 55;
   fighter.weapon = null;
+  fighter.overshield = 0;
+  fighter.overshieldDelay = 0;
+  fighter.isaacSlowTimer = 0;
   fighter.x = Math.max(stage.width * 0.15, Math.min(stage.width * 0.85, fighter.x));
   fighter.y = 260;
   const particleX = Math.max(stage.width * 0.12, Math.min(stage.width * 0.88, fighter.x));
@@ -1057,6 +1113,14 @@ function updateStageHazard(deltaTime) {
 function updateProjectiles(deltaTime) {
   for (const projectile of runtime.game.projectiles) {
     if (projectile.life <= 0) continue;
+    if (projectile.kind === 'isaac-throwable') {
+      updateIsaacThrowable(projectile, deltaTime);
+      continue;
+    }
+    if (projectile.kind === 'isaac-puddle') {
+      updateIsaacPuddle(projectile, deltaTime);
+      continue;
+    }
     const previousY = projectile.y;
     projectile.x += projectile.vx;
     if (projectile.kind === 'bomb' || projectile.kind === 'banana') {
@@ -1075,7 +1139,7 @@ function updateProjectiles(deltaTime) {
       const overlapsX = Math.abs(target.x - projectile.x) < projectile.radius + COMBAT.projectileHitWidth;
       const overlapsY = Math.abs(target.y - projectile.y) < projectile.radius + COMBAT.projectileHitHeight;
       if (!overlapsX || !overlapsY) continue;
-      applyHit(owner, target, projectile.power, projectile.kind !== 'bullet', '', Math.min(previousY, projectile.y));
+      applyHit(owner, target, projectile.power, projectile.kind !== 'bullet', '', Math.min(previousY, projectile.y), ITEMS.weaponStrengthScale);
       spawnParticles(projectile.x, projectile.y, projectile.color, 16);
       projectile.life = 0;
       break;
@@ -1083,6 +1147,67 @@ function updateProjectiles(deltaTime) {
     if (projectile.x < 25 || projectile.x > runtime.game.stageLayout.width - 25) projectile.life = 0;
   }
   runtime.game.projectiles = runtime.game.projectiles.filter((projectile) => projectile.life > 0);
+}
+
+function updateIsaacThrowable(projectile, deltaTime) {
+  const stage = runtime.game.stageLayout;
+  const previousY = projectile.y;
+  projectile.vy += ITEMS.isaacThrowGravity * deltaTime;
+  projectile.x += projectile.vx * deltaTime;
+  projectile.y += projectile.vy * deltaTime;
+  projectile.life -= deltaTime;
+  if (projectile.life <= 0 || projectile.x < 25 || projectile.x > stage.width - 25) {
+    projectile.life = 0;
+    return;
+  }
+
+  const landedPlatform = stage.platforms.find((platform) => (
+    projectile.vy >= 0
+    && previousY + projectile.radius <= platform.y
+    && projectile.y + projectile.radius >= platform.y
+    && projectile.x >= platform.x
+    && projectile.x <= platform.x + platform.w
+  ));
+  if (landedPlatform) {
+    landIsaacTear(projectile, landedPlatform.y);
+    return;
+  }
+  if (projectile.y + projectile.radius >= stage.floorY) {
+    if (projectile.x >= stage.playableLeft && projectile.x <= stage.playableRight) {
+      landIsaacTear(projectile, stage.floorY);
+    } else {
+      projectile.life = 0;
+    }
+  }
+}
+
+function landIsaacTear(projectile, surfaceY) {
+  projectile.kind = 'isaac-puddle';
+  projectile.y = surfaceY - ITEMS.isaacPuddleLandingOffset;
+  projectile.vx = 0;
+  projectile.vy = 0;
+  projectile.life = ITEMS.isaacTrapDuration;
+  projectile.radius = ITEMS.isaacPuddleRadius;
+  projectile.hitCooldowns = {};
+  spawnParticles(projectile.x, projectile.y, '#ff7045', 18);
+  spawnRingEffect(projectile.x, projectile.y, '#ff9b6e', ITEMS.isaacPuddleRadius, VFX.gunShotRingLifetime);
+}
+
+function updateIsaacPuddle(puddle, deltaTime) {
+  puddle.life -= deltaTime;
+  const owner = runtime.game.entities.find((fighter) => fighter.id === puddle.ownerId);
+  if (!owner) return;
+  for (const [targetId, cooldown] of Object.entries(puddle.hitCooldowns)) {
+    puddle.hitCooldowns[targetId] = Math.max(0, cooldown - deltaTime);
+  }
+  for (const target of runtime.game.entities) {
+    if (target.id === owner.id || target.eliminated || target.respawn > 0) continue;
+    if (Math.hypot(target.x - puddle.x, target.y + 18 - puddle.y) > puddle.radius) continue;
+    target.isaacSlowTimer = Math.max(target.isaacSlowTimer, ITEMS.isaacSlowDuration);
+    if ((puddle.hitCooldowns[target.id] || 0) > 0 || target.invuln > 0) continue;
+    applyHit(owner, target, puddle.power, false, '', owner.y, ITEMS.weaponStrengthScale);
+    puddle.hitCooldowns[target.id] = ITEMS.isaacTrapHitCooldown;
+  }
 }
 function checkForMatchWinner() {
   if (runtime.game.training) return;
@@ -1123,6 +1248,9 @@ function resetTraining() {
     fighter.attackCooldown = 0;
     fighter.specialCooldown = 0;
     fighter.gustBoostTimer = 0;
+    fighter.overshield = 0;
+    fighter.overshieldDelay = 0;
+    fighter.isaacSlowTimer = 0;
     fighter.attackWarmup = 0;
     fighter.attackActiveTimer = 0;
     fighter.jumpCount = 0;
